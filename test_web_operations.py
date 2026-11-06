@@ -5,7 +5,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+from app_server import AppServerRun
 from web_operations import OperationsServer
 
 SUCCESS = '''import sys
@@ -103,6 +105,33 @@ print('{"type":"turn.completed"}', flush=True)
         self.assertEqual(status, 200)
         self.assertIn("resultado segunda".encode(), data)
         self.assertNotIn("resultado primeira".encode(), data)
+
+    async def test_invalid_engine_does_not_close_existing_app_server_session(self):
+        class Writer:
+            def __init__(self):
+                self.data = bytearray()
+
+            def write(self, value):
+                self.data.extend(value)
+
+            async def drain(self):
+                pass
+
+        self.app = OperationsServer([self.root])
+        existing = AppServerRun(str(self.root), "sessão anterior")
+        existing.close = AsyncMock()
+        self.app.session.run = existing
+        self.app.session.engine = "app-server"
+        writer = Writer()
+
+        await self.app._start_run({
+            "prompt": "nova tarefa", "project": str(self.root), "engine": "invalido",
+        }, writer)
+
+        self.assertTrue(writer.data.startswith(b"HTTP/1.1 400 Bad Request"))
+        self.assertIn(b"Executor invalido", writer.data)
+        self.assertIs(self.app.session.run, existing)
+        existing.close.assert_not_awaited()
 
     async def test_sse_event_published_during_drain_is_not_lost(self):
         app = OperationsServer([self.root])

@@ -178,8 +178,6 @@ class OperationsServer:
         if self.session.task and not self.session.task.done():
             await self._response(writer, 409, "Já existe uma execução ativa".encode())
             return
-        if isinstance(self.session.run, AppServerRun):
-            await self.session.run.close()
         try:
             engine = payload.get("engine", "exec")
             if engine not in ("exec", "app-server"):
@@ -192,6 +190,8 @@ class OperationsServer:
         except ValueError:
             await self._response(writer, 400, "Não foi possível validar a tarefa ou o diretório".encode())
             return
+        if isinstance(self.session.run, AppServerRun):
+            await self.session.run.close()
         # Keep the event ID monotonic, but never replay a previous task into a new view.
         self.session.events.clear()
         self.session.run = run
