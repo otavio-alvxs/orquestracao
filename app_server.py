@@ -181,6 +181,8 @@ class AppServerRun:
             await self._finish_approval(opaque_id, "decline")
             return False
         if decision == "accept":
+            if self.mode == "reading":
+                return False
             if approval.get("_network") or approval.get("_grant_root") or approval.get("_additional_permissions"):
                 return False
             available = approval.get("_available_decisions")

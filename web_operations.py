@@ -283,7 +283,8 @@ class OperationsServer:
         approvals = []
         if isinstance(run, AppServerRun):
             approvals = [{**{k: v for k, v in item.items() if not k.startswith("_")},
-                          "can_approve": (not item.get("_network") and not item.get("_grant_root") and
+                          "can_approve": (run.mode == "development" and
+                                          not item.get("_network") and not item.get("_grant_root") and
                                           not item.get("_additional_permissions") and
                                           (not isinstance(item.get("_available_decisions"), list) or
                                            "accept" in item["_available_decisions"]))}

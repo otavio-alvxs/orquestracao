@@ -125,6 +125,7 @@ for line in sys.stdin:
             await asyncio.sleep(.01)
         self.assertEqual(run.mode, "development")
         approval_id = next(iter(run.pending_approvals))
+        self.assertTrue(self.app._snapshot()["approvals"][0]["can_approve"])
         self.assertEqual((await self.post("/api/approval", {
             "request_id": approval_id, "decision": "accept",
         }))[0], 200)
@@ -133,6 +134,35 @@ for line in sys.stdin:
         }))[0], 409)
         await asyncio.wait_for(self.app.session.task, 3)
         self.assertEqual(run.state.status, "completed")
+
+    async def test_reading_rejects_native_approval_and_allows_decline(self):
+        await self.app_start(SUCCESS)
+        run = AppServerRun(str(self.root), "Inspect", mode="reading")
+        run.thread_id, run.turn_id, run.state.status = "thread", "turn", "running"
+        run._write_response = AsyncMock(return_value=True)
+        self.app.session.run = run
+        self.app.session.engine = "app-server"
+        for kind in ("commandExecution", "fileChange"):
+            with self.subTest(kind=kind):
+                await run._approval_request("rpc-" + kind, "item/" + kind + "/requestApproval", {
+                    "threadId": "thread", "turnId": "turn", "itemId": kind,
+                })
+                approval_id = next(iter(run.pending_approvals))
+                self.assertFalse(self.app._snapshot()["approvals"][0]["can_approve"])
+                run._write_response.reset_mock()
+                self.assertFalse(await run.decide_approval(approval_id, "accept"))
+                self.assertEqual((await self.post("/api/approval", {
+                    "request_id": approval_id, "decision": "accept",
+                }))[0], 409)
+                run._write_response.assert_not_awaited()
+                self.assertIn(approval_id, run.pending_approvals)
+                self.assertEqual((await self.post("/api/approval", {
+                    "request_id": approval_id, "decision": "decline",
+                }))[0], 200)
+                run._write_response.assert_awaited_once_with({
+                    "id": "rpc-" + kind, "result": {"decision": "decline"},
+                })
+                self.assertFalse(run.pending_approvals)
 
     async def test_same_origin_fetch_without_origin_and_no_cross_run_replay(self):
         script = '''import json,sys
