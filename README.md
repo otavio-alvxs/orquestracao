@@ -2,6 +2,94 @@
 
 Projeto para organizar o uso incremental de agentes, modelos, skills e ferramentas, priorizando funcionalidade, velocidade e economia de recursos.
 
+## TUI funcional — v0.7 (Missão 014)
+
+A interface inicia um processo real do Codex no projeto escolhido, acompanha
+JSONL e apresenta o resultado ou a falha. Não executa tarefas ao abrir.
+O inspetor anterior continua independente, usando somente a biblioteca padrão.
+
+### Instalação e primeiro uso
+
+Requisitos da TUI: Linux/POSIX, Python 3.10+, Codex CLI no `PATH`, autenticação
+já configurada pelo próprio Codex e um diretório Git autorizado. A integração foi
+preparada com CLI **0.166.0** e Textual **8.2.8**. Não instale pacotes globalmente.
+
+```sh
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-tui.txt
+.venv/bin/python orchestration_tui.py
+```
+
+Informe o diretório Git do projeto na interface e escreva, por exemplo:
+“Analise somente em leitura a documentação deste projeto e indique divergências
+relevantes.” Inicie explicitamente a tarefa. Eventos e resultado ficam visíveis
+na sessão; cancelar e sair encerram o grupo de processos da execução.
+
+Controles: **Usar diretório** valida a seleção; **Iniciar tarefa** ou
+**F5** ou **Ctrl+Enter** envia a tarefa; **Cancelar** ou **Ctrl+C** interrompe;
+**Ctrl+Q** sai. Use Tab para navegar e os painéis roláveis para consultar o
+resultado. A troca de projeto fica disponível ao encerrar a execução atual.
+Se o terminal não transmitir Ctrl+Enter, use F5 ou o botão.
+
+### Integração e permissões
+
+A integração usa `codex -a on-request exec --json --ephemeral --sandbox read-only`, sem shell
+intermediário, com a tarefa enviada por stdin. A autenticação permanece sob
+controle do CLI; a TUI não lê nem manipula tokens. Configurações, regras e
+AGENTS.md do destino continuam sendo carregados pelo Codex. O modo somente
+leitura restringe comandos pelo sandbox do Codex; não limita a leitura ao
+projeto nem cria uma nova fronteira de segurança para ferramentas externas.
+Selecione apenas diretórios e tarefas que você autoriza e use uma configuração
+Codex confiável, incluindo seus hooks e servidores MCP.
+
+A v0.7 não responde a aprovações interativas. Operações que dependam de
+permissão adicional devem ser realizadas na interface nativa do Codex.
+`app-server` foi avaliado como alternativa e adiado para uma evolução específica.
+Não há API de modelos, runtime de agentes ou protocolo próprio.
+Referência: [modo não interativo oficial](https://learn.chatgpt.com/docs/non-interactive-mode).
+
+O painel distingue a tarefa solicitada, a execução confirmada e o resultado.
+Só eventos estruturados recebidos durante esta execução sustentam estados de
+agentes. Modelo/esforço e papéis sem evidência aparecem como “não disponível”;
+TOMLs e pedidos de delegação não comprovam execução. O coordenador pode usar os
+especialistas que o Codex disponibilizar nativamente, conforme a tarefa e as
+regras do projeto, sem delegação obrigatória ou garantia de uma árvore completa.
+Não se leem históricos privados para preencher o painel. Nesta versão o parser
+reconhece o coordenador; delegações, papéis de filhos, modelos e esforços não são
+extraídos do formato de streaming reconhecido e permanecem indisponíveis. Isso
+não comprova ausência de delegação. Valores configurados e solicitados não são
+consultados nem apresentados como observados.
+
+Prompts, respostas e eventos permanecem apenas na memória da TUI e não são
+registrados por ela. `--ephemeral` pede ao CLI que não salve rollouts de sessão;
+isso não desativa registros, serviços ou políticas de retenção externos do
+próprio Codex e de ferramentas configuradas. Stderr e erros técnicos são tratados
+sem publicar seu conteúdo bruto na interface. Nenhum banco ou histórico próprio.
+
+### Validação desta entrega
+
+- PR #6 confirmada integrada em `469d26a`; main sincronizada e árvore inicialmente limpa.
+- Um único smoke real pela TUI em `run_test` a 120×36 células, no próprio
+  Orquestração, com CLI 0.166.0: **completed**, 11 eventos estruturados,
+  resposta não vazia (292 caracteres), código **0** e subprocesso recolhido.
+  A tarefa pediu leitura de README/ROADMAP sem delegação. Nenhum subagente foi
+  observado; isso não valida uma árvore de especialistas pelo streaming.
+- Developer implementou o incremento inicial. A revisão independente com Reviewer
+  encontrou cinco falhas de cancelamento, limpeza, diagnóstico e exibição de erro;
+  foram corrigidas e reavaliadas, sem defeitos remanescentes confirmados.
+- **35 testes aprovados** no ambiente virtual. Sem Textual instalado, a descoberta
+  também passa: 31 testes e quatro testes da TUI ignorados explicitamente.
+  Os testes controlados cobrem subprocessos reais locais sem inferência, parsing,
+  falhas, limites de eventos, cancelamento, grupo de processos, seleção de projeto,
+  atalhos, resultado e encerramento. Dados privados do smoke não foram gravados
+  nem publicados. Eventos de diagnóstico ficam limitados aos 500 mais recentes;
+  evento JSONL acima de 4 MiB interrompe a execução com falha segura.
+
+```sh
+.venv/bin/python -B -m unittest discover -v
+python3 -B -m unittest -v test_inspect_sessions.py
+```
+
 ## Estado atual confirmado
 
 O inspetor de históricos do Codex oferece saída JSON e visualização em árvore de

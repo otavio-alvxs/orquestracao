@@ -142,6 +142,23 @@ abaixo permanecem propostas de evolução.
   configurações pessoais e outros repositórios preservados. Evidências e limites
   no README; sem publicar históricos ou medir ganho de qualidade, tempo ou custo.
 
+## v0.7 — Missão 014
+
+- Primeira TUI em Python/Textual com execução real via `codex exec --json`,
+  somente leitura, sessão efêmera, streaming, resultado, cancelamento e seleção
+  explícita de diretório. Dependência opcional da TUI em ambiente virtual;
+  inspetor preservado sem dependências externas.
+- Eventos e estados são apresentados conforme as evidências disponíveis, sem
+  inferir modelo/esforço de TOMLs nem consultar históricos privados. Especialistas
+  continuam sob o mecanismo nativo do Codex; a TUI não cria runtime de agentes.
+- Smoke real pela TUI com CLI 0.166.0 concluído: 11 eventos, resposta não vazia,
+  saída 0 e processo recolhido. Testes sintéticos de processo/interface e revisão
+  independente executados; sem inferir agentes ou modelos de configurações.
+- Aprovações interativas via app-server, sessões persistentes, métricas reais de
+  tokens e duração, configuração de especialistas, histórico de tarefas,
+  visualização avançada, roteamento automático e interface web local (se
+  justificada) permanecem possibilidades futuras com escopo e autorização próprios.
+
 ## Próximas capacidades prioritárias
 
 - Evoluir a observabilidade somente de leitura a partir das evidências existentes,
