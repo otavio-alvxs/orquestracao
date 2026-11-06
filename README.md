@@ -4,7 +4,7 @@ Projeto para organizar o uso incremental de agentes, modelos, skills e ferrament
 
 ## Estado atual confirmado
 
-Além da documentação inicial, a Missão 005 adiciona um inspetor mínimo de históricos do Codex. Não há agentes personalizados, serviços ou infraestrutura implementados.
+O inspetor de históricos do Codex oferece saída JSON e visualização em árvore de sessões (v0.2, Missão 008). Não há agentes personalizados, serviços ou infraestrutura implementados.
 
 Conforme informado para este bootstrap, a configuração global do Codex usa Sol como coordenador, Luna como padrão para subagentes e concorrência inicial máxima de dois filhos. Essa configuração é externa ao repositório; não foi verificada nem alterada aqui. O limite é ajustável conforme necessidade e recursos disponíveis.
 
@@ -27,6 +27,7 @@ automaticamente, enviado pela rede ou alterado.
 ```sh
 python3 inspect_sessions.py /caminho/autorizado/historico.jsonl
 python3 inspect_sessions.py /caminho/autorizado/historicos
+python3 inspect_sessions.py /caminho/autorizado/historicos --format tree
 python3 -B -m unittest -v test_inspect_sessions.py
 ```
 
@@ -37,6 +38,17 @@ ou conteúdo bruto de ferramentas. `observed_settings` vem de `turn_context`;
 usado. `null` e listas vazias indicam ausência de dados reconhecidos; não se infere
 herança de modelo ou esforço. Mudanças de configuração são preservadas como
 combinações distintas, sem contar turnos ou chamadas.
+
+O formato padrão continua sendo JSON; `--format json` o seleciona explicitamente.
+Com `--format tree`, cada sessão mostra seu identificador e as combinações de
+modelo/esforço observadas, com um resumo do total de sessões e delegações
+confirmadas. Sessões sem relação conhecida também aparecem. Referências sem
+metadados e configurações desconhecidas são indicadas sem usar valores solicitados
+como se fossem observados. Relações cíclicas e sessões com múltiplos pais são
+marcadas para limitar a expansão; a árvore não comprova que o grafo seja consistente.
+Os totais incluem sessões apenas referenciadas e relações confirmadas distintas,
+não chamadas de ferramenta. As mesmas limitações de reconhecimento e a mesma
+allowlist do JSON se aplicam à árvore.
 
 Formatos reconhecidos: `session_meta.payload.id`, origem principal `cli`, `exec`
 ou `vscode`, origem de subagente `source.subagent` e parentesco em

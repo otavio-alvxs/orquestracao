@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from inspect_sessions import inspect, main
+from inspect_sessions import inspect, main, render_tree
 
 
 def event(kind, **payload):
@@ -134,6 +134,106 @@ class InspectorTests(unittest.TestCase):
         self.assertEqual(relation["parent_id"], "parent")
         self.assertEqual(relation["child_id"], "child")
         self.assertEqual(relation["requested_settings"], [])
+
+    def test_tree_renders_confirmed_multilevel_relations_and_orphans(self):
+        self.write("main.jsonl", [meta("main"),
+                   event("turn_context", model="gpt-6.1-sol", effort="high"),
+                   call(), output(agent_id="worker")])
+        self.write("worker.jsonl", [meta("worker", {"subagent": {"thread_spawn": {
+                   "parent_thread_id": "main"}}}),
+                   event("turn_context", model="gpt-6-luna", effort="low"),
+                   call("nested", model="gpt-6-luna"),
+                   output("nested", agent_id="leaf")])
+        self.write("orphan.jsonl", [meta("orphan", "unknown")])
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = main([str(self.root), "--format", "tree"])
+        rendered = stdout.getvalue()
+        self.assertEqual(status, 0)
+        self.assertIn("main [modelo=gpt-6.1-sol esforço=high]", rendered)
+        self.assertIn("worker [modelo=gpt-6-luna esforço=low]", rendered)
+        self.assertIn("leaf [modelo=? esforço=?] [metadados ausentes]", rendered)
+        self.assertIn("orphan [modelo=? esforço=?]", rendered)
+        self.assertIn("Resumo: 4 sessões, 2 delegações", rendered)
+        self.assertNotIn("SECRET", rendered)
+
+    def test_tree_is_iterative_for_cycles_and_json_default_is_unchanged(self):
+        self.write("a.jsonl", [meta("a", {"subagent": {"thread_spawn": {
+                   "parent_thread_id": "b"}}})])
+        self.write("b.jsonl", [meta("b", {"subagent": {"thread_spawn": {
+                   "parent_thread_id": "a"}}})])
+        result = inspect(self.root)
+        self.assertEqual(len(result["delegations"]), 2)
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = main([str(self.root), "--format", "tree"])
+        self.assertEqual(status, 0)
+        self.assertIn("ciclo ou referência repetida", stdout.getvalue())
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = main([str(self.root)])
+        self.assertEqual(status, 0)
+        self.assertEqual(json.loads(stdout.getvalue()), result)
+
+    def test_tree_preserves_branch_order_and_indentation(self):
+        self.write("main.jsonl", [meta("main"), call("a-call"),
+                   output("a-call", agent_id="a"), call("b-call"),
+                   output("b-call", agent_id="b")])
+        self.write("a.jsonl", [meta("a", {"subagent": {"thread_spawn": {
+                   "parent_thread_id": "main"}}}), call("a-leaf"),
+                   output("a-leaf", agent_id="a-leaf")])
+        self.write("b.jsonl", [meta("b", {"subagent": {"thread_spawn": {
+                   "parent_thread_id": "main"}}}), call("b-leaf"),
+                   output("b-leaf", agent_id="b-leaf")])
+        self.write("a-leaf.jsonl", [meta("a-leaf", {"subagent": {"thread_spawn": {
+                   "parent_thread_id": "a"}}})])
+        self.write("b-leaf.jsonl", [meta("b-leaf", {"subagent": {"thread_spawn": {
+                   "parent_thread_id": "b"}}})])
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            main([str(self.root), "--format", "tree"])
+        self.assertEqual(stdout.getvalue(), (
+            "main [modelo=? esforço=?]\n"
+            "├── a [modelo=? esforço=?]\n"
+            "│   └── a-leaf [modelo=? esforço=?]\n"
+            "└── b [modelo=? esforço=?]\n"
+            "    └── b-leaf [modelo=? esforço=?]\n"
+            "\nResumo: 5 sessões, 4 delegações\n"))
+
+    def test_tree_handles_multiple_parents_without_repeating_subtree(self):
+        self.write("a.jsonl", [meta("a"), call("spawn"), output("spawn", agent_id="shared")])
+        self.write("b.jsonl", [meta("b"), call("spawn"), output("spawn", agent_id="shared")])
+        self.write("shared.jsonl", [meta("shared", {"subagent": {"thread_spawn": {
+                   "parent_thread_id": "a"}}})])
+        rendered = render_tree(inspect(self.root))
+        self.assertEqual(rendered.count("shared ["), 2)
+        self.assertIn("ciclo ou referência repetida", rendered)
+
+    def test_tree_handles_a_chain_beyond_python_recursion_limit(self):
+        size = 1100
+        sessions = [{"id": str(index), "metadata_present": True,
+                     "observed_settings": []} for index in range(size)]
+        delegations = [{"parent_id": str(index), "child_id": str(index + 1)}
+                       for index in range(size - 1)]
+        rendered = render_tree({"sessions": sessions, "delegations": delegations})
+        self.assertTrue(rendered.startswith("0 [modelo=? esforço=?]\n"))
+        self.assertIn("Resumo: 1100 sessões, 1099 delegações", rendered)
+
+    def test_tree_never_prints_untrusted_content(self):
+        path = self.write("PRIVATE-PATH/safe.jsonl", [meta("safe"),
+                          call(message="SECRET PROMPT", model="SECRET MODEL"),
+                          output(agent_id="child", response="SECRET RESPONSE"),
+                          event("response_item", type="message", content="SECRET MESSAGE"),
+                          event("response_item", type="function_call", name="read_file",
+                                arguments=json.dumps({"path": "/SECRET/PATH"})),
+                          event("response_item", type="function_call_output",
+                                output="SECRET TOOL RESULT")])
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            main([str(path), "--format", "tree"])
+        self.assertNotIn("SECRET", stdout.getvalue())
+        self.assertIn("child [modelo=? esforço=?] [metadados ausentes]", stdout.getvalue())
+        self.assertNotIn("PRIVATE-PATH", stdout.getvalue())
 
 
 if __name__ == "__main__":

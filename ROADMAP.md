@@ -15,8 +15,17 @@ necessidade prática, benefício demonstrável, escopo e autorização próprios
   selecionados, usando apenas a biblioteca padrão do Python. Relaciona sessões e
   evidências de delegação, distingue configurações solicitadas das observadas e
   restringe a saída a metadados permitidos, sem publicar conteúdo privado.
-- Sete testes existentes cobrem os formatos reconhecidos, limites da correlação,
-  histórico herdado, entradas inválidas e preservação dos arquivos de entrada.
+- v0.2 (Missão 008): `--format tree` apresenta relações confirmadas em múltiplos
+  níveis, sessões sem vínculo conhecido, referências incompletas, ciclos e resumo,
+  preservando o JSON padrão e a allowlist. Testes usam somente dados sintéticos.
+- A implementação da árvore foi delegada a um único subagente pelo mecanismo
+  nativo compatível, sem modelo explícito no spawn. A interface desta execução
+  não expõe seleção do tipo `worker` nem informa o modelo resolvido no retorno
+  do spawn. O subagente relatou `gpt-6-luna` em seu contexto, sem verificação em
+  históricos privados. A revisão identificou necessidade de corrigir a ordem dos
+  ramos com vários filhos. O mecanismo nativo compatível atendeu à tarefa;
+  o tipo `worker` específico não pôde ser avaliado nesta interface. Nenhuma
+  configuração global foi alterada; não houve motivo para criar agente próprio.
 
 O inspetor não é um dashboard nem um gerenciador de agentes. As capacidades
 abaixo permanecem propostas de evolução.
