@@ -45,9 +45,27 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                         await asyncio.wait_for(app.run_task, 5)
                         self.assertEqual(app.current_run.state.status, expected)
                         self.assertIn('resultado', app.query_one('#result', TextArea).text)
+                        summary = str(app.query_one('#status', Static).render())
+                        self.assertIn('duração', summary)
+                        self.assertIn('indisponível', summary)
+                        self.assertIn('Resultado: resultado', summary)
                         if expected == 'failed':
                             self.assertIn('7', app.query_one('#result', TextArea).text)
                         self.assertIsNotNone(app.current_run.process.returncode)
+
+    async def test_status_summary_fits_compact_terminal(self):
+        with tempfile.TemporaryDirectory() as root:
+            app = OrchestrationApp(root)
+            response_script = SUCCESS.replace('resultado', 'Use [/]')
+            with patch('orchestration_tui.CodexRun', side_effect=lambda cwd, task: controlled_run(cwd, response_script, task)):
+                async with app.run_test(size=(80, 30)) as pilot:
+                    app.query_one('#task', TextArea).load_text('analise')
+                    await pilot.press('f5')
+                    await asyncio.wait_for(app.run_task, 5)
+                    status = app.query_one('#status', Static)
+                    self.assertIn('Resultado: Use [/] ', str(status.render()) + ' ')
+                    self.assertGreaterEqual(status.region.height, 3)
+                    self.assertLessEqual(status.region.bottom, app.query_one('#events').region.y)
 
     async def test_immediate_cancel_and_quit_reap_process(self):
         with tempfile.TemporaryDirectory() as root:

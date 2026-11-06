@@ -42,6 +42,19 @@ class EventTests(unittest.TestCase):
         self.assertEqual(state.agents['coordinator']['model'], 'não disponível')
         self.assertNotIn('developer', state.agents)
 
+    def test_usage_accepts_only_nonnegative_integers(self):
+        state = RunState()
+        parse_event(json.dumps({"type": "turn.completed", "usage": {
+            "input_tokens": 0, "output_tokens": 12, "cached_input_tokens": 3}}), state)
+        self.assertEqual((state.input_tokens, state.output_tokens, state.cached_input_tokens), (0, 12, 3))
+        state = RunState()
+        parse_event(json.dumps({"type": "turn.completed", "usage": {
+            "input_tokens": True, "output_tokens": -1, "cached_input_tokens": "4"}}), state)
+        self.assertEqual((state.input_tokens, state.output_tokens, state.cached_input_tokens), (None, None, None))
+        state = RunState()
+        parse_event('{"type":"turn.completed"}', state)
+        self.assertEqual((state.input_tokens, state.output_tokens, state.cached_input_tokens), (None, None, None))
+
     def test_private_diagnostics_and_unknown_events_are_not_echoed(self):
         state = RunState()
         for event in ({"type": "error", "message": "secret"}, {"type": "secret/path"},
@@ -77,6 +90,8 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn('running', states)
             self.assertEqual(run.state.status, 'completed')
             self.assertEqual(run.state.final, 'resultado')
+            self.assertIsNotNone(run.state.duration_seconds)
+            self.assertGreaterEqual(run.state.duration_seconds, 0)
             self.assertEqual(run.process.returncode, 0)
             self.assertEqual(list(Path(root).iterdir()), [])
 
@@ -85,6 +100,7 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
             run = controlled_run(root, SUCCESS + 'sys.stderr.write("secret" * 100000); sys.exit(7)')
             await asyncio.wait_for(collect(run), 5)
             self.assertEqual(run.state.status, 'failed')
+            self.assertIsNotNone(run.state.duration_seconds)
             self.assertIn('7', run.state.error)
             self.assertNotIn('secret', run.state.error)
             self.assertEqual(run.state.final, 'resultado')
@@ -105,16 +121,19 @@ class ProcessTests(unittest.IsolatedAsyncioTestCase):
             await collect(run)
             self.assertEqual(run.state.status, 'failed')
             self.assertNotIn('secret', run.state.error)
+            self.assertIsNotNone(run.state.duration_seconds)
             run = controlled_run(root, SUCCESS, ' ')
             await collect(run)
             self.assertIsNone(run.process)
             self.assertEqual(run.state.status, 'failed')
+            self.assertIsNotNone(run.state.duration_seconds)
 
     async def test_oversized_stream_stops_process(self):
         with tempfile.TemporaryDirectory() as root:
             run = controlled_run(root, 'import sys,time; sys.stdout.write("x" * 5000000); sys.stdout.flush(); time.sleep(30)')
             await asyncio.wait_for(collect(run), 6)
             self.assertEqual(run.state.status, 'failed')
+            self.assertIsNotNone(run.state.duration_seconds)
             self.assertIsNotNone(run.process.returncode)
 
     async def test_cancel_running_reaps_group_even_if_child_ignores_term(self):
@@ -135,6 +154,7 @@ time.sleep(30)
             await run.cancel()
             await asyncio.wait_for(task, 5)
             self.assertEqual(run.state.status, 'interrupted')
+            self.assertIsNotNone(run.state.duration_seconds)
             self.assertIsNotNone(run.process.returncode)
             # On Linux zombies are already terminated; no live members may remain.
             members = []
