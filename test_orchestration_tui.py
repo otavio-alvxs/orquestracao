@@ -48,9 +48,12 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                         summary = str(app.query_one('#status', Static).render())
                         self.assertIn('duração', summary)
                         self.assertIn('indisponível', summary)
-                        self.assertIn('Resultado: resultado', summary)
                         if expected == 'failed':
+                            self.assertIn('Resultado: ' + app.current_run.state.error, summary)
+                            self.assertNotIn('Resultado: resultado', summary)
                             self.assertIn('7', app.query_one('#result', TextArea).text)
+                        else:
+                            self.assertIn('Resultado: resultado', summary)
                         self.assertIsNotNone(app.current_run.process.returncode)
 
     async def test_status_summary_fits_compact_terminal(self):

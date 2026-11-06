@@ -159,7 +159,7 @@ class OrchestrationApp(App):
         if state:
             consumption = (f"tokens entrada {metric(state.input_tokens)} · saída {metric(state.output_tokens)} · "
                            f"cache {metric(state.cached_input_tokens)}")
-            outcome = state.final or state.error
+            outcome = (state.error or state.final) if state.status == "failed" else (state.final or state.error)
             if outcome:
                 result_summary = "Resultado: " + " ".join(outcome.split())[:100]
         self.query_one("#status", Static).update(
