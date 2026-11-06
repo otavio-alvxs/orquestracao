@@ -1,16 +1,17 @@
-# Catálogo de candidatas — Missão 009
+# Catálogo de skills — Missões 009–010
 
-Pesquisa pontual para adoção futura, sem instalar ferramentas. Nomes e arquivos
-upstream foram consultados nesta missão; compatibilidade operacional só é
-comprovada quando houver teste no Codex e revisão do pacote completo.
+Pesquisa original da Missão 009, com adoção local atualizada na Missão 010.
+O inventário abaixo é histórico salvo indicação expressa; presença no disco
+não comprova descoberta ou execução.
 
-## Inventário observado
+## Inventário observado na Missão 009
 
 - Codex CLI 0.166.0. Nenhum agente pessoal encontrado no diretório padrão;
-  este repositório passa a ter somente `python-maintainer`. A documentação
+  este repositório passou a ter somente `developer`. A documentação
   [oficial de subagentes](https://learn.chatgpt.com/docs/agent-configuration/subagents)
-  descreve os papéis nativos `default`, `worker` e `explorer`; a interface desta
-  sessão oferece delegação nativa sem seletor de papel.
+  descreve os papéis nativos `default`, `worker` e `explorer`; a interface daquela
+  sessão oferecia delegação nativa sem seletor de papel. Na Missão 010, seleção
+  explícita de `developer` e Luna/low observados foram comprovados (README).
 - Skills expostas: `imagegen`, `openai-docs`, `skill-creator`, `skill-installer`,
   `open-pr`, `plugin-management`, `sites`, `sites-remix` e as três de Work Pets.
   Há ainda `review-agent` e templates de artefatos no disco/cache; presença de
@@ -47,18 +48,24 @@ comprovada quando houver teste no Codex e revisão do pacote completo.
   exigem respeitar o pedido e as políticas do projeto; presença não concede
   todas as permissões administrativas. Próxima ação: reutilizar a conexão.
 
-## Skills candidatas globais
+## Skills externas: adoção local e candidatas
 
 ### `docs-sync-audit`
 
-- Finalidade: verificar divergências entre documentação e código após mudanças
-  de CLI, API ou configuração. Fonte confirmada:
-  [GitHub Awesome Copilot](https://github.com/github/awesome-copilot/blob/main/skills/docs-sync-audit/SKILL.md).
-  Declara portabilidade entre agentes; execução no Codex pendente; ausente no inventário.
-- Escopo: global, acionamento explícito por mudança. Inclui `scripts/docs_drift.py`;
-  revisar esse auxiliar e evitar o padrão de auditoria ampla sem necessidade.
-  A instrução sobre tratar arquivos como evidência não substitui os AGENTS.md.
-  Próxima ação: revisar pacote/licença e testar em um diff pequeno.
+- Adotada somente no projeto na Missão 010, em
+  [`.agents/skills/docs-sync-audit/`](.agents/skills/docs-sync-audit/SKILL.md).
+  Fonte: GitHub Awesome Copilot, licença MIT, revisão upstream
+  `96543145e9cb97711020b57b9d88f968062c4fc7`.
+  [Procedência e revisão do pacote completo](.agents/skills/docs-sync-audit/PROVENANCE.md).
+- Compatibilidade comprovada no piloto Codex 0.166.0: descoberta em configuração
+  temporária isolada e aplicação pelo papel `developer` selecionado explicitamente.
+  Auxiliar determinístico executado; diagnóstico de prosa permaneceu necessário.
+- Sem dependências externas ao Python/Git já disponíveis. Não acessa rede nem
+  executa comandos documentados. O auxiliar pode gerar falsos positivos e não
+  substitui AGENTS.md, revisão humana ou testes. Sem duplicidade com `open-pr`
+  e `openai-docs`; não substitui o inspetor de sessões.
+- Sem promoção global. Demais candidatas abaixo permanecem pendentes; o inventário
+  histórico das skills pessoais não foi alterado por esta instalação.
 
 ### `github-actions-hardening`
 
@@ -131,6 +138,7 @@ comprovada quando houver teste no Codex e revisão do pacote completo.
 - Preservar `open-pr` e `tars-small-pr`, respeitar os AGENTS.md dos projetos e
   evitar duplicação de fluxos. Implantação futura seletiva e reversível, uma
   candidata por vez, com autorização própria e possibilidade de remoção.
-- Prioridade prática: reutilizar GitHub; avaliar `docs-sync-audit` numa mudança
-  documental e `systematic-debugging` no próximo bug. As demais dependem dos
-  gatilhos descritos acima. Nenhuma candidata foi instalada nesta missão.
+- Prioridade prática: reutilizar GitHub e a cópia local de `docs-sync-audit` quando
+  houver mudança documental; avaliar `systematic-debugging` no próximo bug. As
+  demais dependem dos gatilhos descritos acima. Na Missão 009 nenhuma candidata
+  foi instalada; na Missão 010 somente `docs-sync-audit` foi instalada localmente.
