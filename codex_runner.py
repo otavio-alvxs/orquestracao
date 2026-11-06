@@ -46,12 +46,17 @@ def validate_project(path: str | Path) -> Path:
         raise ValueError("Selecione um diretório existente e acessível.") from exc
 
 
-def build_command(cwd: str | Path, codex: str | None = None) -> list[str]:
+def build_command(cwd: str | Path, codex: str | None = None, *, approvals_reviewer: str | None = None) -> list[str]:
     project = validate_project(cwd)
     executable = codex or shutil.which("codex")
     if not executable:
         raise ValueError("Codex CLI não encontrado no PATH.")
-    return [executable, "-a", "on-request", "exec", "--json", "--ephemeral",
+    args = [executable, "-a", "on-request"]
+    if approvals_reviewer is not None:
+        if approvals_reviewer != "user":
+            raise ValueError("Revisor de aprovações inválido.")
+        args.extend(["-c", 'approvals_reviewer="user"'])
+    return [*args, "exec", "--json", "--ephemeral",
             "--sandbox", "read-only", "--cd", str(project), "-"]
 
 
@@ -107,10 +112,11 @@ def parse_event(line: str, state: RunState) -> str | None:
 class CodexRun:
     """One process group, with bounded event buffers and deterministic shutdown."""
     def __init__(self, cwd: str | Path, prompt: str, *, codex: str | None = None,
-                 process_factory: Callable = asyncio.create_subprocess_exec):
+                 process_factory: Callable = asyncio.create_subprocess_exec,
+                 approvals_reviewer: str | None = None):
         self.cwd = validate_project(cwd)
         self.prompt = prompt.strip()
-        self.command = build_command(self.cwd, codex)
+        self.command = build_command(self.cwd, codex, approvals_reviewer=approvals_reviewer)
         self.process_factory = process_factory
         self.process: asyncio.subprocess.Process | None = None
         self.state = RunState()

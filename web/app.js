@@ -2,11 +2,24 @@
   const csrf = document.querySelector('meta[name="csrf-token"]').content;
   const projects = JSON.parse(document.querySelector('meta[name="projects"]').content);
   const $ = (id) => document.getElementById(id);
-  const project = $('project'), prompt = $('prompt'), start = $('start');
+  const project = $('project'), prompt = $('prompt'), start = $('start'), mode = $('mode');
   const statusText = { idle: 'Aguardando', starting: 'Preparando execução', running: 'Em andamento', completed: 'Concluída', failed: 'Falhou', interrupted: 'Cancelada' };
   let lastId = 0, active = false, clock;
   projects.forEach((path) => { const option = document.createElement('option'); option.value = path; option.textContent = path; project.append(option); });
   prompt.addEventListener('input', () => $('char-count').textContent = `${prompt.value.length.toLocaleString('pt-BR')} / 16.000`);
+  mode.addEventListener('change', () => {
+    const dev = mode.value === 'development';
+    $('mode-help').textContent = dev ? 'Desenvolvimento usa workspaceWrite: pode alterar arquivos do projeto sem pedir autorização individual para cada edição.' : 'Leitura usa sandbox readOnly.';
+    $('mode-hint').textContent = dev ? 'Aprovações adicionais aparecem quando o Codex solicitar.' : 'A execução não altera arquivos.';
+    $('engine').disabled = dev;
+    if (dev) $('engine').value = 'app-server';
+    $('effective-mode').textContent = dev ? 'Desenvolvimento' : 'Leitura';
+  });
+  function lockSelection(locked) {
+    project.disabled = locked;
+    mode.disabled = locked;
+    $('engine').disabled = locked || mode.value === 'development';
+  }
   prompt.addEventListener('keydown', (event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') start.click(); });
 
   async function api(path, body) {
@@ -22,6 +35,13 @@
     $('new-task').classList.toggle('hidden', !['completed', 'failed', 'interrupted'].includes(status));
     $('result-panel').classList.toggle('hidden', !state.result);
     $('result').textContent = state.result || '';
+    if (state.mode === 'development') $('effective-mode').textContent = 'Desenvolvimento · workspaceWrite';
+    else if (state.mode === 'reading') $('effective-mode').textContent = 'Leitura · readOnly';
+    lockSelection(['starting', 'running'].includes(status) || Boolean(state.thread_id));
+    renderApprovals(state.approvals || []);
+    const files = state.changed_files || [];
+    $('changed-files').classList.toggle('hidden', files.length === 0);
+    $('changed-files').textContent = files.length ? `Alterações locais observadas: ${files.join(', ')}` : '';
     $('error').classList.toggle('hidden', !state.error);
     $('error').textContent = state.error || '';
     if (state.thread_id) { $('session-id').textContent = `Sessão ${state.thread_id}`; $('session-id').classList.remove('hidden'); }
@@ -32,6 +52,34 @@
     if (state.duration_seconds != null) $('elapsed').textContent = `${state.duration_seconds.toFixed(1)} s`;
     if (['completed', 'failed', 'interrupted'].includes(status)) {
       active = false; clearInterval(clock); start.disabled = false; start.innerHTML = '<span class="play">▶</span> Iniciar tarefa <kbd>⌘ ↵</kbd>';
+    }
+  }
+  function renderApprovals(approvals) {
+    $('approval-list').replaceChildren();
+    $('approval-panel').classList.toggle('hidden', !approvals.length);
+    for (const item of approvals) {
+      const card = document.createElement('article'); card.className = 'approval-card';
+      const title = document.createElement('strong'); title.textContent = item.type === 'command' ? 'Comando' : 'Alteração de arquivos'; card.append(title);
+      if (item.reason) { const reason = document.createElement('p'); reason.textContent = item.reason; card.append(reason); }
+      if (item.command) { const command = document.createElement('code'); command.textContent = item.command; card.append(command); }
+      if (item.files?.length) { const files = document.createElement('p'); files.textContent = item.files.join(', '); card.append(files); }
+      const actions = document.createElement('div'); actions.className = 'approval-actions';
+      for (const [decision, label] of [['accept','Aprovar uma vez'],['decline','Recusar']]) {
+        if (decision === 'accept' && !item.can_approve) continue;
+        const button = document.createElement('button'); button.textContent = label; button.disabled = Boolean(item.sending);
+        button.className = decision === 'accept' ? 'primary' : 'cancel';
+        button.addEventListener('click', async () => {
+          button.disabled = true;
+          try {
+            const response = await api('/api/approval', { request_id: item.id, decision });
+            if (!response.ok) throw new Error((await response.text()) || 'Decisão não enviada.');
+            $('approval-feedback').textContent = decision === 'accept' ? 'Aprovação enviada uma vez' : 'Recusa enviada';
+            $('approval-feedback').classList.remove('hidden');
+          } catch (error) { $('approval-feedback').textContent = error.message; $('approval-feedback').classList.remove('hidden'); button.disabled = false; }
+        });
+        actions.append(button);
+      }
+      card.append(actions); $('approval-list').append(card);
     }
   }
   function addEvent(message) {
@@ -78,16 +126,18 @@
   }
   start.addEventListener('click', async () => {
     const task = prompt.value.trim(); if (!task || active) return;
+    $('approval-feedback').textContent = ''; $('approval-feedback').classList.add('hidden');
     active = true; lastId = 0; $('event-list').replaceChildren(); $('event-count').textContent = '0 eventos';
     $('execution').classList.remove('hidden'); $('run-title').textContent = task;
     $('conversation').replaceChildren(); $('session-id').classList.add('hidden'); $('agents').classList.add('hidden');
     $('project-label').textContent = project.value; $('elapsed').textContent = 'Em andamento';
     $('result-panel').classList.add('hidden'); $('error').classList.add('hidden'); $('progress').style.width = '';
     start.disabled = true; start.textContent = 'Iniciando…';
-    render({ status: 'starting' });
+    render({ status: 'starting', mode: mode.value });
     try {
-      const response = await api('/api/run', { prompt: task, project: project.value, engine: $('engine').value });
+      const response = await api('/api/run', { prompt: task, project: project.value, engine: $('engine').value, mode: mode.value });
       if (!response.ok) { const detail = await response.text(); throw new Error(detail || 'Não foi possível iniciar.'); }
+      lockSelection(true);
       stream().catch((error) => { if (active) { addEvent(error.message); active = false; render({ status: 'failed', error: error.message }); } });
       clock = setInterval(async () => {
         const response = await fetch('/api/status', { headers: { 'X-CSRF-Token': csrf } });
@@ -110,5 +160,8 @@
     } catch (error) { active = false; render({ status: 'failed', error: error.message }); }
     finally { $('send-message').disabled = false; }
   });
-  $('new-task').addEventListener('click', () => { prompt.value = ''; prompt.dispatchEvent(new Event('input')); prompt.focus(); $('execution').classList.add('hidden'); });
+  $('new-task').addEventListener('click', () => {
+    prompt.value = ''; prompt.dispatchEvent(new Event('input')); prompt.focus(); $('execution').classList.add('hidden');
+    $('approval-feedback').textContent = ''; $('approval-feedback').classList.add('hidden'); lockSelection(false);
+  });
 })();

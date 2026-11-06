@@ -2,7 +2,7 @@
 
 Projeto para organizar o uso incremental de agentes, modelos, skills e ferramentas, priorizando funcionalidade, velocidade e economia de recursos.
 
-## Central Web local — v0.11 (Missão 018)
+## Central Web local — v0.12 (Missão 019)
 
 Inicie com Python 3.10+ e Codex CLI já autenticado. Cada diretório autorizado
 deve ser informado na inicialização; sem argumentos, somente o diretório atual
@@ -14,19 +14,22 @@ python3 web_operations.py --project /caminho/do/projeto
 ```
 
 Abra o endereço local impresso no terminal. A página inicia uma sessão contínua
-com `codex app-server --listen stdio://`, apresenta a conversa e permite continuar
-na mesma thread ou interromper o turno. O seletor também oferece `codex exec`
-isolado da v0.10. Ambas as opções usam sandbox `read-only`; eventos técnicos ficam
-recolhíveis. A thread app-server é iniciada com `ephemeral: true`; o schema
-instalado descreve esse modo como não materializado em disco. Threads comuns do
-app-server podem ser persistidas em JSONL. A TUI continua disponível em
+com `codex app-server --listen stdio://`, permite continuar na mesma thread ou
+interromper o turno e oferece os modos Leitura e Desenvolvimento. Leitura usa
+`readOnly`; Desenvolvimento requer escolha explícita e usa `workspaceWrite`, com
+rede desativada na política do turno. Esse modo pode alterar arquivos do projeto
+sem autorização individual para cada edição. O seletor `codex exec` permanece
+disponível apenas para Leitura. A política de aprovações é `on-request` e o app
+server encaminha solicitações nativas de comandos e arquivos para decisões
+humanas únicas ou recusa, conforme suportado. Alterações locais são indicadas
+quando confirmadas por eventos de arquivo concluídos. A TUI segue disponível em
 `orchestration_tui.py`.
 
-O modo somente leitura é aplicado pelo Codex e não cria uma fronteira contra
-instruções maliciosas nos arquivos lidos, hooks ou ferramentas externas. Use
-projetos e tarefas autorizados e uma configuração Codex confiável. Pedidos de
-aprovação são recusados pela interface web; não existe fluxo de aprovação nela.
-O token CSRF e o estado da única tarefa ficam apenas na memória do processo.
+O sandbox do Codex não impõe proibição de push, merge, releases, operações
+destrutivas ou mudanças globais dentro do workspace. A aplicação não publica
+automaticamente; prompts não substituem controles técnicos. Use projetos e
+tarefas autorizados e uma configuração Codex confiável. O token CSRF e o estado
+da única tarefa ficam na memória do processo, que escuta somente `127.0.0.1`.
 
 ## TUI funcional — v0.7 (Missão 014)
 

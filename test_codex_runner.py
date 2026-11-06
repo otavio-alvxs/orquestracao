@@ -70,6 +70,9 @@ class CommandTests(unittest.TestCase):
             self.assertEqual(build_command(root, '/usr/bin/codex'), [
                 '/usr/bin/codex', '-a', 'on-request', 'exec', '--json', '--ephemeral',
                 '--sandbox', 'read-only', '--cd', root, '-'])
+            self.assertEqual(build_command(root, '/usr/bin/codex', approvals_reviewer='user'), [
+                '/usr/bin/codex', '-a', 'on-request', '-c', 'approvals_reviewer="user"',
+                'exec', '--json', '--ephemeral', '--sandbox', 'read-only', '--cd', root, '-'])
             self.assertEqual(validate_project(root), Path(root))
             for value in (Path(root)/'missing', '', '\0', Path(root)/'file'):
                 with self.assertRaises(ValueError):

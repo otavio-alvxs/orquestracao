@@ -1,4 +1,4 @@
-"""Local browser interface for ephemeral, read-only Codex runs."""
+"""Local browser interface for ephemeral, permission-scoped Codex runs."""
 from __future__ import annotations
 
 import argparse
@@ -155,6 +155,23 @@ class OperationsServer:
                         await run.cancel()
                     await self._response(writer, 200, b'{"ok":true}', "application/json")
                     return
+                if path == "/api/approval":
+                    run = self.session.run
+                    approval_id, decision = payload.get("request_id"), payload.get("decision")
+                    if not isinstance(run, AppServerRun) or self.session.engine != "app-server":
+                        await self._response(writer, 409, "Nenhuma sessão app-server ativa".encode())
+                        return
+                    if not isinstance(approval_id, str) or decision not in ("accept", "decline"):
+                        await self._response(writer, 400, "Decisão inválida".encode())
+                        return
+                    accepted = await run.decide_approval(approval_id, decision)
+                    if not accepted:
+                        await self._response(writer, 409, "Solicitação expirada ou decisão não suportada".encode())
+                        return
+                    await self.session.emit("approval-decision", {"request_id": approval_id, "decision": decision})
+                    await self.session.emit("state", self._snapshot())
+                    await self._response(writer, 200, b'{"ok":true}', "application/json")
+                    return
             await self._response(writer, 404, b"Not found")
         except (asyncio.IncompleteReadError, asyncio.TimeoutError, ValueError, ConnectionError):
             if not writer.is_closing():
@@ -169,11 +186,15 @@ class OperationsServer:
 
     async def _start_run(self, payload: dict, writer: asyncio.StreamWriter) -> None:
         prompt, project = payload.get("prompt"), payload.get("project")
+        mode = payload.get("mode", "reading")
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
             await self._response(writer, 400, "A tarefa deve conter entre 1 e 16000 caracteres".encode())
             return
         if not isinstance(project, str) or project not in {str(p) for p in self.projects}:
             await self._response(writer, 403, "Projeto não autorizado".encode())
+            return
+        if mode not in ("reading", "development"):
+            await self._response(writer, 400, "Modo inválido".encode())
             return
         if self.session.task and not self.session.task.done():
             await self._response(writer, 409, "Já existe uma execução ativa".encode())
@@ -181,12 +202,17 @@ class OperationsServer:
         try:
             engine = payload.get("engine", "exec")
             if engine not in ("exec", "app-server"):
-                await self._response(writer, 400, b"Executor invalido")
+                await self._response(writer, 400, "Executor inválido".encode())
+                return
+            if engine == "exec" and mode != "reading":
+                await self._response(writer, 400, "codex exec está disponível somente no modo Leitura".encode())
                 return
             kwargs = {"codex": self.codex}
             if self.process_factory:
                 kwargs["process_factory"] = self.process_factory
-            run = AppServerRun(project, prompt, **kwargs) if engine == "app-server" else CodexRun(project, prompt, **kwargs)
+            if engine == "exec":
+                kwargs["approvals_reviewer"] = "user"
+            run = AppServerRun(project, prompt, mode=mode, **kwargs) if engine == "app-server" else CodexRun(project, prompt, **kwargs)
         except ValueError:
             await self._response(writer, 400, "Não foi possível validar a tarefa ou o diretório".encode())
             return
@@ -254,10 +280,21 @@ class OperationsServer:
             elapsed = max(0, time.monotonic() - state.started_at)
         agents = getattr(state, "agents", {})
         result = state.final if isinstance(run, AppServerRun) or state.status in TERMINAL else ""
+        approvals = []
+        if isinstance(run, AppServerRun):
+            approvals = [{**{k: v for k, v in item.items() if not k.startswith("_")},
+                          "can_approve": (run.mode == "development" and
+                                          not item.get("_network") and not item.get("_grant_root") and
+                                          not item.get("_additional_permissions") and
+                                          (not isinstance(item.get("_available_decisions"), list) or
+                                           "accept" in item["_available_decisions"]))}
+                         for item in run.pending_approvals.values()]
         return {"status": state.status, "result": result, "error": state.error,
                 "duration_seconds": elapsed, "input_tokens": state.input_tokens,
                 "output_tokens": state.output_tokens, "cached_input_tokens": state.cached_input_tokens,
-                "thread_id": getattr(run, "thread_id", None), "agents": agents}
+                "thread_id": getattr(run, "thread_id", None), "agents": agents,
+                "mode": getattr(run, "mode", "reading"), "approvals": approvals,
+                "changed_files": sorted(getattr(run, "changed_files", set()))}
 
     async def _stream(self, writer: asyncio.StreamWriter, last_id: int) -> None:
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nX-Content-Type-Options: nosniff\r\n\r\n")
