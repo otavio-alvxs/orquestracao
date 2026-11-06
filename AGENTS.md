@@ -9,7 +9,19 @@
 - Agentes especializados, skills, scripts, serviços, dashboards e outras infraestruturas exigem escopo próprio.
 - Revise o diff e faça apenas verificações proporcionais à mudança. Encerre quando a entrega estiver funcional, sem auditorias extensas ou documentação excessiva.
 - Não realize push, merge ou publicação sem autorização explícita.
-- Coordenador não implementa por padrão; tarefas simples dispensam delegação.
-- Developer recebe escopo delimitado e resumo curto; Reviewer atua conforme risco, sem repetição.
-- Prefira determinismo antes de inferência; subagentes entregam resumo com evidências, sem logs extensos.
+- Sol decide e distribui; não relê toda a implementação por padrão. Tarefas simples dispensam delegação.
+- Developer recebe escopo delimitado; cada especialista lê somente o contexto necessário à tarefa. Reviewer atua conforme risco, sem repetição; dispense-o em documentação trivial.
+- Prefira determinismo antes de inferência; use evidências resumidas em vez de logs completos. O coordenador consulta detalhes somente diante de erro, inconsistência ou decisão relevante.
 - Paralelize somente trabalho independente.
+
+## Retorno dos especialistas
+
+Prefira 5–8 linhas, em texto livre, sem JSON obrigatório:
+
+- Estado: COMPLETED / BLOCKED / NEEDS_FIX.
+- Entrega: resultado realizado.
+- Arquivos: caminhos afetados, quando houver.
+- Verificações: o que foi executado e resultado, com evidência técnica suficiente.
+- Problemas e próxima ação: quando necessários.
+
+Detalhes adicionais sob demanda; preserve sempre informações indispensáveis.
