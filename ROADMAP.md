@@ -55,6 +55,23 @@ abaixo permanecem propostas de evolução.
 - [Catálogo de oito candidatas](SKILLS_CANDIDATES.md) preserva a pesquisa,
   o inventário e os critérios para adoção seletiva futura; nenhuma instalação.
 
+## v0.4 — Missão 010
+
+- `developer` operacionalmente validado no Codex 0.166.0: seleção explícita por
+  `agent_type="developer"` na ferramenta nativa numa única auditoria documental.
+  Papel confirmado pelo metadado `agent_role`; Luna/low observados em
+  `turn_context` do filho, excluído o histórico herdado. Não comprova economia de
+  inferência ou disponibilidade em todas as interfaces. Detalhes no README.
+- Primeira skill externa instalada somente neste projeto:
+  [docs-sync-audit](.agents/skills/docs-sync-audit/SKILL.md), com pacote e licença
+  revisados e [procedência fixada](.agents/skills/docs-sync-audit/PROVENANCE.md).
+  As referências à ausência de instalação na v0.3 descrevem a missão anterior.
+- Piloto comparou documentação com CLI, testes e definição do agente. Comandos,
+  argumentos e códigos de saída coerentes; corrigidos nome antigo e estados do
+  catálogo/validação. Inspetor preservado; 19 testes existentes passaram.
+- Reutilização local ou futura promoção pessoal por link documentadas no README;
+  nenhuma promoção global, mudança de outro projeto ou nova infraestrutura.
+
 ## Próximas capacidades prioritárias
 
 - Evoluir a observabilidade somente de leitura a partir das evidências existentes,
@@ -103,9 +120,10 @@ critérios de validação próprios. Não criar agentes sem necessidade prática
 ### Skills e ferramentas
 
 Possibilidades a avaliar: `systematic-debugging`, `post-patch-validation`,
-`docs-sync-audit`, `github-actions-hardening`, `arch-linux-triage` e
+`github-actions-hardening`, `arch-linux-triage` e
 `harness-engineering`, além de operações determinísticas de arquivos e workflows
-Git/GitHub. A lista não implica instalação nem disponibilidade atual.
+Git/GitHub. A lista não implica instalação nem disponibilidade atual; `docs-sync-audit`
+já foi adotada localmente na v0.4.
 
 Reutilizar capacidades existentes antes de criar outras. Examinar proveniência,
 licenças e segurança de componentes de terceiros antes de adotá-los.
