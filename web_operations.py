@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import html as html_lib
+from email.header import decode_header
 import json
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -18,6 +20,7 @@ HOST = "127.0.0.1"
 MAX_BODY = 70 * 1024
 TERMINAL = {"completed", "failed", "interrupted"}
 WEB_ROOT = Path(__file__).with_name("web")
+TAILSCALE_ORIGIN = re.compile(r"https://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){2}ts\.net\Z")
 
 
 @dataclass
@@ -40,12 +43,22 @@ class Session:
 class OperationsServer:
     """Small HTTP/SSE adapter. The browser session lives only in process memory."""
     def __init__(self, projects: list[Path], *, codex: str | None = None,
-                 process_factory: Callable | None = None):
+                 process_factory: Callable | None = None, remote_origin: str | None = None,
+                 remote_logins: set[str] | None = None):
         self.projects = tuple(dict.fromkeys(validate_project(p) for p in projects))
         if not self.projects:
             raise ValueError("Informe ao menos um diretório autorizado com --project.")
         self.codex = codex
         self.process_factory = process_factory
+        if (remote_origin is None) != (remote_logins is None):
+            raise ValueError("Configure juntos --remote-origin e --remote-logins-file.")
+        if remote_origin is not None and not TAILSCALE_ORIGIN.fullmatch(remote_origin):
+            raise ValueError("A origem remota deve ser HTTPS em hostname Tailscale com dois rótulos antes de ts.net.")
+        if remote_logins is not None and not remote_logins:
+            raise ValueError("A allowlist remota precisa conter ao menos um login.")
+        self.remote_origin = remote_origin
+        self.remote_host = remote_origin.removeprefix("https://") if remote_origin else None
+        self.remote_logins = frozenset(remote_logins or ())
         self.session = Session()
         self.session.engine = "exec"
         self.server: asyncio.AbstractServer | None = None
@@ -87,10 +100,16 @@ class OperationsServer:
                     return
                 headers[key.lower()] = value.strip()
             host = headers.get("host", "")
-            if not self._valid_host(host):
+            remote = self._authorize_request(host, headers, writer)
+            if remote is None:
                 await self._response(writer, 403, b"Forbidden")
                 return
             path = target.split("?", 1)[0]
+            fetch_site = headers.get("sec-fetch-site")
+            if remote and fetch_site is not None and not (
+                    fetch_site == "same-origin" or (method == "GET" and path == "/" and fetch_site == "none")):
+                await self._response(writer, 403, b"Forbidden")
+                return
             if method == "GET" and path == "/":
                 html = (WEB_ROOT / "index.html").read_text()
                 html = html.replace("__CSRF__", self.session.token).replace(
@@ -111,7 +130,7 @@ class OperationsServer:
             if method == "GET" and path == "/api/events":
                 origin = headers.get("origin")
                 fetch_site = headers.get("sec-fetch-site")
-                if ((origin is not None and not self._valid_origin(origin, host)) or
+                if ((origin is not None and not self._request_origin_ok(origin, host, remote)) or
                         (fetch_site is not None and fetch_site != "same-origin")):
                     await self._response(writer, 403, b"Forbidden")
                     return
@@ -121,7 +140,10 @@ class OperationsServer:
                 await self._stream(writer, int(headers.get("last-event-id", "0")))
                 return
             if method == "POST":
-                if not self._valid_origin(headers.get("origin", ""), host):
+                if not self._request_origin_ok(headers.get("origin", ""), host, remote):
+                    await self._response(writer, 403, b"Forbidden")
+                    return
+                if remote and headers.get("sec-fetch-site") not in (None, "same-origin"):
                     await self._response(writer, 403, b"Forbidden")
                     return
                 if headers.get("x-csrf-token") != self.session.token:
@@ -330,6 +352,41 @@ class OperationsServer:
     def _valid_origin(cls, origin: str, host: str) -> bool:
         return origin in (f"http://{host}", "http://127.0.0.1", "http://localhost")
 
+    def _authorize_request(self, host: str, headers: dict[str, str], writer: asyncio.StreamWriter) -> bool | None:
+        """Return whether the request is remote, or None when it is unauthorized."""
+        if "tailscale-funnel-request" in headers:
+            return None
+        peer = writer.get_extra_info("peername")
+        peer_host = peer[0] if isinstance(peer, tuple) and peer else ""
+        loopback_peer = peer_host in ("127.0.0.1", "::1")
+        identity_headers = {"tailscale-user-login", "tailscale-user-name", "tailscale-user-profile-pic"}
+        forwarded_headers = {key for key in headers if key.startswith("x-forwarded-")}
+        if host == self.remote_host and self.remote_origin and loopback_peer:
+            raw_login = headers.get("tailscale-user-login", "")
+            try:
+                chunks = decode_header(raw_login)
+                login = "".join(part.decode(encoding or "ascii") if isinstance(part, bytes) else part
+                                for part, encoding in chunks)
+            except (LookupError, UnicodeError, ValueError):
+                return None
+            if login not in self.remote_logins:
+                return None
+            if "origin" in headers and headers["origin"] != self.remote_origin:
+                return None
+            return True
+        if not self._valid_host(host) or not loopback_peer:
+            return None
+        # The proxy may rewrite routing from TLS SNI but preserves HTTP Host.
+        # A local Host must never allow a caller to smuggle proxy credentials.
+        if identity_headers.intersection(headers) or forwarded_headers:
+            return None
+        return False
+
+    def _request_origin_ok(self, origin: str, host: str, remote: bool) -> bool:
+        if remote:
+            return origin == self.remote_origin
+        return self._valid_origin(origin, host)
+
     @staticmethod
     async def _response(writer: asyncio.StreamWriter, status: int, body: bytes,
                         content_type: str = "text/plain; charset=utf-8") -> None:
@@ -343,8 +400,10 @@ class OperationsServer:
         await writer.drain()
 
 
-async def serve(projects: list[Path], port: int, codex: str | None) -> None:
-    app = OperationsServer(projects, codex=codex)
+async def serve(projects: list[Path], port: int, codex: str | None,
+                remote_origin: str | None = None, remote_logins: set[str] | None = None) -> None:
+    app = OperationsServer(projects, codex=codex, remote_origin=remote_origin,
+                           remote_logins=remote_logins)
     actual_port = await app.start(port)
     print(f"Orquestração Web disponível em http://127.0.0.1:{actual_port}", flush=True)
     try:
@@ -359,10 +418,24 @@ def main() -> None:
     parser.add_argument("--project", action="append", default=[], help="Diretório autorizado (repetível)")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--codex", help=argparse.SUPPRESS)
+    parser.add_argument("--remote-origin", help="Única origem HTTPS autorizada (ex.: https://dispositivo.tailnet.ts.net)")
+    parser.add_argument("--remote-logins-file", type=Path,
+                        help="Arquivo local UTF-8, um login Tailscale autorizado por linha")
     args = parser.parse_args()
+    if (args.remote_origin is None) != (args.remote_logins_file is None):
+        parser.error("--remote-origin e --remote-logins-file devem ser usados juntos")
+    remote_logins = None
+    if args.remote_logins_file:
+        try:
+            remote_logins = {line.strip() for line in args.remote_logins_file.read_text(encoding="utf-8").splitlines()
+                             if line.strip() and not line.lstrip().startswith("#")}
+        except (OSError, UnicodeError):
+            parser.error("Não foi possível ler --remote-logins-file")
+        if not remote_logins or any(any(c.isspace() for c in login) for login in remote_logins):
+            parser.error("A allowlist deve conter ao menos um login, sem espaços")
     projects = [Path(p) for p in (args.project or [str(Path.cwd())])]
     try:
-        asyncio.run(serve(projects, args.port, args.codex))
+        asyncio.run(serve(projects, args.port, args.codex, args.remote_origin, remote_logins))
     except KeyboardInterrupt:
         pass
     except (OSError, ValueError) as exc:
