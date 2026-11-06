@@ -115,18 +115,32 @@ abaixo permanecem propostas de evolução.
 - PR #5 confirmada integrada; main sincronizada e branch da v0.6 criada. Developer
   implementou código/testes com seleção explícita e metadados próprios confirmando
   `developer`, Luna/low, excluído histórico herdado.
-- **Reviewer personalizado: execução não validada.** Seleção explícita retornou
+- Na tentativa inicial, a seleção do Reviewer personalizado retornou
   `unknown agent_type 'reviewer'`. CLI 0.166.0 descobriu o arquivo no catálogo em
-  configuração temporária isolada, sem inferência; isso não valida a invocação.
+  configuração temporária isolada, sem inferência; essa descoberta não validava
+  a invocação. A pendência foi resolvida na Missão 012B abaixo.
 - Revisão independente realizada pelo fluxo nativo disponível: `default` com
   Terra/medium confirmados em metadados próprios, sem fork de histórico e sem
   avaliação pronta do Developer. Nenhum defeito confirmado, nenhuma correção
   necessária. Coordenador integrou; 21 testes sintéticos e `git diff --check`
   passaram. Evidências e exemplo sintético no README, sem publicar históricos.
 - Separação útil para segunda análise independente; ganho de qualidade, tempo e
-  custo não medido. Próxima melhoria: validar seleção do papel `reviewer` em nova
-  sessão que o exponha, com tarefa real e autorização própria. Sem infraestrutura
-  adicional nem promoção global nesta missão.
+  custo não medido. Sem infraestrutura adicional nem promoção global nesta missão.
+
+### Missão 012B — Reviewer personalizado VERIFIED
+
+- Nova sessão expôs `reviewer`; seleção explícita de `agent_type="reviewer"` aceita,
+  com `fork_turns="none"`, sem sobrescrever modelo/esforço.
+- Cabeçalho do filho, vinculado à sessão atual, confirmou `agent_role=reviewer`;
+  `turn_context` próprio confirmou `gpt-6.1-terra` / `medium`. Sem histórico herdado
+  na comprovação; somente metadados estruturados do filho recém-criado consultados.
+- Revisão independente somente de leitura de `main...HEAD` no commit
+  `d7793e4dc16cfa49342340ff21eab3b65334a209`: nenhum defeito confirmado em bugs,
+  privacidade, compatibilidade e testes. Os 21 testes sintéticos passaram.
+- Nenhuma correção de código; README, ROADMAP e descrição da PR #6 registram
+  VERIFIED, preservando a tentativa anterior como histórico. PR mantida em draft;
+  configurações pessoais e outros repositórios preservados. Evidências e limites
+  no README; sem publicar históricos ou medir ganho de qualidade, tempo ou custo.
 
 ## Próximas capacidades prioritárias
 
