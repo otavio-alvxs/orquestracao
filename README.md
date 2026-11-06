@@ -8,7 +8,9 @@ O inspetor de históricos do Codex oferece saída JSON e visualização em árvo
 sessões, com seleção de raiz. Na v0.4 (Missão 010), o especialista
 [`developer`](.codex/agents/developer.toml) teve invocação personalizada validada
 em uma auditoria documental com a primeira skill externa instalada localmente,
-[`docs-sync-audit`](.agents/skills/docs-sync-audit/SKILL.md).
+[`docs-sync-audit`](.agents/skills/docs-sync-audit/SKILL.md). Na v0.5 (Missão 011D),
+a reutilização pessoal do Developer no TARS foi **VERIFIED**, com arquivo TOML
+regular e papel/modelo/esforço confirmados nos metadados próprios do filho.
 
 Conforme informado para este bootstrap, a configuração global do Codex usa Sol como coordenador, Luna como padrão para subagentes e concorrência inicial máxima de dois filhos. Essa configuração é externa ao repositório; não foi verificada nem alterada aqui. O limite é ajustável conforme necessidade e recursos disponíveis.
 
@@ -100,8 +102,8 @@ sem refatorações oportunistas, respeitando AGENTS.md, sandbox e autorizações
 Configura inicialmente `gpt-6-luna` com esforço `low`; decisões de escalonamento
 cabem ao coordenador. Conhecimento específico de linguagens e ecossistemas
 poderá vir de skills ou instruções de projeto, sem ser embutido no agente.
-A promoção pessoal foi tentada na Missão 011, mas permanece bloqueada pelo
-sandbox; a disponibilidade comprovada continua sendo a local.
+A promoção pessoal e a reutilização no TARS foram comprovadas no fechamento da
+Missão 011D; os bloqueios das tentativas anteriores estão preservados abaixo.
 
 ### Validação operacional — Missão 010
 
@@ -170,16 +172,36 @@ o Codex descobre arquivos TOML em `.codex/agents/` do projeto e em
 Disponibilizar o arquivo permite descoberta; comprovar invocação exige seleção
 explícita e evidência de execução, como no piloto acima.
 
-A fonte única é `.codex/agents/developer.toml` desta checkout. O destino pessoal
-previsto é `~/.codex/agents/developer.toml`, por link simbólico para o caminho
-absoluto da fonte. Não copiar a definição para outros projetos nem alterar
-`~/.codex/config.toml`. O agente deve respeitar o AGENTS.md e as skills aplicáveis
-ao destino; o link não concede permissões extras.
+A fonte versionada é `.codex/agents/developer.toml` desta checkout. A instalação
+pessoal usa uma cópia regular em `~/.codex/agents/developer.toml`, com integridade
+verificada e atualização explícita. Não copiar a definição para outros projetos
+nem alterar `~/.codex/config.toml`. O agente respeita o AGENTS.md e as skills
+aplicáveis ao destino; a instalação não concede permissões extras.
 
 ### Developer compartilhado — Missão 011 (v0.5)
 
-**Promoção pessoal: BLOCKED. Descoberta global: BLOCKED. Delegação no TARS:
-BLOCKED.** A missão não comprovou reutilização global.
+**Promoção pessoal: VERIFIED. Descoberta pessoal no TARS: VERIFIED. Delegação
+no TARS: VERIFIED (Missão 011D).** Resultado final comprovado informado para este
+fechamento documental:
+
+| Evidência final | Resultado |
+| --- | --- |
+| Instalação pessoal | O symlink foi substituído por arquivo TOML regular em `~/.codex/agents/developer.toml`, correspondente à definição versionada do Orquestração |
+| Origem no TARS | Sem definição local homônima; seleção explícita de `agent_type="developer"` funcionou |
+| Papel observado | `agent_role=developer` nos metadados estruturados da sessão filha |
+| Modelo e esforço observados | `gpt-6-luna` e `low` nos metadados estruturados próprios do filho, excluído o histórico herdado |
+| Tarefa concluída | Developer analisou `automation reminder` somente em leitura, cobrindo validação, persistência, runtime e testes |
+| Preservação do destino | Nenhum arquivo ou estado operacional do TARS alterado |
+
+A comprovação vale para o contexto validado, sem afirmar disponibilidade em todas
+as interfaces. Históricos privados, prompts, respostas internas e identificadores
+de sessão não são publicados. Este fechamento apenas documenta o resultado;
+não repete o piloto nem altera configurações pessoais.
+
+#### Histórico das tentativas e incidentes resolvidos
+
+Os estados **BLOCKED** abaixo descrevem a tentativa inicial, superada pelo
+resultado da Missão 011D; não são o estado atual.
 
 Preparação: árvore local limpa, [PR #4](https://github.com/otavio-alvxs/orquestracao/pull/4)
 confirmada integrada em `ff5380f4e3433d6302e03da1933c46cf9e18dc8e`, `main`
@@ -197,15 +219,26 @@ atualizada por fast-forward e branch `feat/v0.5-shared-developer` criada.
 | Conflito local no TARS | `.codex/` inexistente; nenhuma definição local do Developer |
 | Papel/modelo/esforço do piloto | Não observados: nenhum filho criado no TARS e nenhum histórico privado lido |
 
-O catálogo desta sessão do Orquestração oferece `agent_type="developer"`, mas
-isso comprova apenas a disponibilidade local já registrada na Missão 010.
-Não foi usado como evidência de descoberta pessoal ou execução no TARS.
-Luna/low acima são valores da fonte, não configuração observada de um novo filho.
-Não se copiou a definição nem se criou configuração temporária para simular promoção.
+Na tentativa inicial, o catálogo do Orquestração comprovava apenas a
+disponibilidade local da Missão 010. Luna/low na tabela histórica são valores da
+fonte, sem observação de filho naquela tentativa. Não se copiou a definição nem
+se criou configuração temporária para simular promoção nessa etapa.
+
+Na continuação, o link simbólico mostrou-se incompatível com o carregamento do
+TOML pelo **Codex 0.166.0** neste ambiente. A substituição por arquivo regular
+resolveu o carregamento e permitiu a validação final. Não recomendar symlink como
+método de instalação para essa versão; não extrapolar o incidente a outras versões.
+O erro de expansão de glob do Zsh também foi **resolvido**, sem mudanças globais
+no shell. Os procedimentos abaixo usam caminhos explícitos, sem glob.
 
 #### Análise de leitura no TARS
 
-Análise realizada diretamente pelo coordenador, **sem atribuí-la ao Developer**,
+No piloto final, o **Developer** concluiu a análise somente de leitura de
+`automation reminder`, cobrindo validação, persistência, runtime e testes, sem
+alterar arquivos ou estado operacional do TARS.
+
+Para preservar a procedência, o levantamento detalhado abaixo pertence à análise
+inicial realizada diretamente pelo coordenador, **sem atribuí-la ao Developer**,
 na checkout `8ca19bf8368df99d99b782f9d1aab2cfd5fa51a2`. Foram lidos AGENTS.md,
 estado/plano vigente, contrato de notificações, README e código/testes pertinentes.
 Nenhum arquivo do TARS foi modificado; nenhum comando operacional, teste, serviço,
@@ -253,56 +286,102 @@ As referências abaixo são relativas ao repositório
 Nenhuma skill instalada, promovida ou copiada. `docs-sync-audit` não foi aplicada
 no TARS; a inspeção das skills limitou-se a escopo e instruções existentes.
 
-#### Promoção manual e reversão segura
+#### Instalação de arquivo regular, atualização e reversão segura
 
-O sandbox bloqueou a promoção; o usuário pode executar o trecho abaixo fora dele,
-**a partir da raiz desta checkout**, após revisar a definição. O comando não foi
-executado nesta missão. Recusa links nos diretórios pessoais e colisões no destino;
-`ln -sT` (GNU/Linux), sem `-f`, também recusa sobrescrita em caso de corrida.
-
-```sh
-source_path="$(pwd -P)/.codex/agents/developer.toml"
-agent_dir="$HOME/.codex/agents"
-agent_link="$agent_dir/developer.toml"
-if [ -f "$source_path" ] && [ -d "$HOME/.codex" ] &&
-   [ ! -L "$HOME/.codex" ] && [ ! -L "$agent_dir" ] &&
-   { [ ! -e "$agent_dir" ] || [ -d "$agent_dir" ]; } &&
-   [ ! -e "$agent_link" ] && [ ! -L "$agent_link" ]; then
-  mkdir -p -- "$agent_dir" && ln -sT -- "$source_path" "$agent_link"
-else
-  echo "Fonte ausente ou destino conflitante; nada criado."
-fi
-```
-
-Depois, abrir **nova sessão no TARS**, confirmar o catálogo e selecionar
-explicitamente `agent_type="developer"` para a análise autorizada. Verificar
-`agent_role=developer` e modelo/esforço em metadados próprios do filho, excluindo
-histórico herdado. Confirmar fonte pessoal e ausência de definição local homônima.
-A execução manual do link, sozinha, não transforma os estados BLOCKED em VERIFIED.
-
-Para desfazer **somente o link criado por esta promoção**, executar da mesma
-checkout, após confirmar sua procedência:
+O procedimento abaixo é uma orientação para uma instalação futura, **não uma
+etapa a repetir no destino já validado**. Executar somente com autorização para
+alterar a configuração pessoal, a partir da raiz desta checkout, após revisar a
+definição e o commit. Recusa fonte não regular, diretórios pessoais simbólicos e
+qualquer destino existente, inclusive symlink pendente. A criação exclusiva (`xb`)
+impede sobrescrita. Não converte nem remove links antigos automaticamente.
 
 ```sh
-source_path="$(pwd -P)/.codex/agents/developer.toml"
-agent_link="$HOME/.codex/agents/developer.toml"
-if [ -L "$agent_link" ] && [ "$(readlink -- "$agent_link")" = "$source_path" ]; then
-  rm -- "$agent_link"
-else
-  echo "Link ausente ou destino diferente; nada removido."
-fi
+python3 - <<'PYINSTALL'
+import hashlib
+from pathlib import Path
+import subprocess
+
+repo = Path.cwd()
+source = repo / ".codex/agents/developer.toml"
+revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+expected = subprocess.check_output([
+    "git", "show", f"{revision}:.codex/agents/developer.toml"
+])
+assert source.is_file() and not source.is_symlink(), "Fonte não regular"
+assert source.read_bytes() == expected, "Fonte difere do commit revisado"
+base = Path.home() / ".codex"
+directory = base / "agents"
+for path in (base, directory):
+    assert not path.is_symlink(), "Diretório simbólico recusado"
+    path.mkdir(exist_ok=True)
+    assert path.is_dir(), "Diretório inválido"
+target = directory / "developer.toml"
+with target.open("xb") as output:
+    output.write(expected)
+assert not target.is_symlink() and target.read_bytes() == expected
+print("Instalação regular verificada; guarde este registro privado:")
+print("Origem: otavio-alvxs/orquestracao, .codex/agents/developer.toml")
+print("Destino: ~/.codex/agents/developer.toml")
+print("Commit:", revision)
+print("SHA-256:", hashlib.sha256(expected).hexdigest())
+PYINSTALL
 ```
 
-Não remover a definição versionada, diretórios ou agentes pessoais preexistentes;
-não alterar configuração global para reverter. Nesta execução bloqueada não há
-link a remover. O link depende de uma checkout mutável: mover a checkout o quebra,
-e mudanças futuras na fonte alteram o agente pessoal. Revisar alterações nesse
-arquivo antes de integrá-las.
+Guardar o registro de instalação em local privado: origem, destino, commit e
+SHA-256. Em caso de erro, parar e inspecionar o resultado; não repetir com
+sobrescrita. Depois de uma instalação, abrir nova sessão no projeto consumidor,
+confirmar ausência de definição local homônima e selecionar explicitamente
+`agent_type="developer"`. Comprovar `agent_role`, modelo e esforço nos metadados
+próprios do filho, excluindo histórico herdado; a cópia sozinha não comprova uso.
 
-Validação desta entrega documental: TOML analisado, integridade comparada ao Git,
-escopos inventariados, referências de código conferidas e `git diff --check`.
-Testes funcionais do Orquestração dispensados: inspetor, testes, agente e skills
-não foram alterados. A comprovação de reutilização real permanece pendente.
+A cópia não acompanha alterações da checkout. Para atualizar, revisar o novo
+commit e a definição, verificar a instalação anterior pelo seu registro privado,
+removê-la pelo procedimento abaixo e instalar a versão revisada sem sobrescrita.
+Guardar o novo registro e validar em nova sessão. Não atualizar silenciosamente.
+
+Para rollback, **primeiro confirmar pelo registro privado que a cópia foi
+instalada por este procedimento**. Igualdade de conteúdo, sozinha, não comprova
+procedência. Sem esse registro, não remover. Preencher os dois valores abaixo
+com o commit e o SHA-256 da instalação a remover, não com os da versão atual.
+Executar na checkout do Orquestração que contém esse commit:
+
+```sh
+python3 - <<'PYROLLBACK'
+import hashlib
+from pathlib import Path
+import re
+import subprocess
+
+installed_revision = "PREENCHER_COMMIT_DO_REGISTRO"
+installed_sha256 = "PREENCHER_SHA256_DO_REGISTRO"
+assert re.fullmatch(r"[0-9a-f]{40}", installed_revision), "Commit inválido"
+assert re.fullmatch(r"[0-9a-f]{64}", installed_sha256), "SHA-256 inválido"
+expected = subprocess.check_output([
+    "git", "show", f"{installed_revision}:.codex/agents/developer.toml"
+])
+assert hashlib.sha256(expected).hexdigest() == installed_sha256
+base = Path.home() / ".codex"
+directory = base / "agents"
+target = directory / "developer.toml"
+assert not base.is_symlink() and not directory.is_symlink()
+assert target.is_file() and not target.is_symlink(), "Destino não regular"
+assert target.read_bytes() == expected, "Conteúdo diferente; nada removido"
+target.unlink()
+print("Somente a cópia pessoal verificada foi removida.")
+PYROLLBACK
+```
+
+Executar sem alterações concorrentes no destino. O rollback recusa symlinks e
+arquivos divergentes; não usa `readlink` nem o procedimento do antigo link.
+Não remover a definição versionada, diretórios ou agentes preexistentes, nem
+alterar configuração global para reverter.
+
+Validação da Missão 011D: revisão do diff, `git diff --check`, sintaxe Python
+dos exemplos analisada sem execução e SHA-256 histórico conferido com a fonte
+versionada.
+Os procedimentos acima não foram executados neste fechamento; nenhuma configuração
+pessoal ou arquivo do TARS foi acessado ou alterado. Testes funcionais dispensados:
+somente README e ROADMAP foram alterados, sem mudanças em código, agente ou skills.
 
 ## Visão futura
 
