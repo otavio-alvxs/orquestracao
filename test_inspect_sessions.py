@@ -251,7 +251,7 @@ class InspectorTests(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), (
             "chosen [modelo=? esforço=?]\n"
             "└── missing [modelo=? esforço=?] [metadados ausentes]\n"
-            "\nResumo: 2 sessões, 1 delegações\n"))
+            "\nResumo: 2 sessões, 1 delegação\n"))
 
     def test_root_filter_handles_cycles_and_multiple_parents(self):
         self.write("a.jsonl", [meta("a"), call("x"), output("x", agent_id="shared")])
@@ -302,7 +302,7 @@ class InspectorTests(unittest.TestCase):
             status = main([str(path), "--format", "tree", "--root", "child"])
         self.assertEqual(status, 0)
         self.assertEqual(stdout.getvalue(), (
-            "child [modelo=? esforço=?] [metadados ausentes]\n\nResumo: 1 sessões, 0 delegações\n"))
+            "child [modelo=? esforço=?] [metadados ausentes]\n\nResumo: 1 sessão, 0 delegações\n"))
         self.assertNotIn("SECRET", stdout.getvalue())
 
     def test_root_filter_handles_long_chain(self):

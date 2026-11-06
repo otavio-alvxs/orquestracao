@@ -238,7 +238,10 @@ def render_tree(result, root_id=None):
                 stack.append((descendants[index], prefix + ("    " if connector == "└── " else "│   "),
                               "└── " if last else "├── "))
     lines.append("")
-    lines.append(f"Resumo: {len(sessions)} sessões, {len(result['delegations'])} delegações")
+    session_count, delegation_count = len(sessions), len(result["delegations"])
+    session_label = "sessão" if session_count == 1 else "sessões"
+    delegation_label = "delegação" if delegation_count == 1 else "delegações"
+    lines.append(f"Resumo: {session_count} {session_label}, {delegation_count} {delegation_label}")
     return "\n".join(lines)
 
 

@@ -36,12 +36,18 @@ abaixo permanecem propostas de evolução.
   escolhida e seus descendentes confirmados, preservando proteção contra ciclos,
   indicação de metadados ausentes e comportamento sem filtro. Raiz inexistente
   produz erro com código 2. Testes usam somente dados sintéticos.
-- Primeiro especialista reutilizável em
-  [`.codex/agents/python-maintainer.toml`](.codex/agents/python-maintainer.toml),
-  com Luna/low e escopo Python delimitado. Descoberta da definição confirmada no
-  CLI 0.166.0 em configuração temporária isolada, sem inferência.
-- Esta sessão não expõe seleção de papel no spawn. Um único filho nativo
-  implementou código/testes com Luna/low solicitados; modelo efetivo não
+- Primeiro especialista de desenvolvimento de software independente de linguagem:
+  [`developer`](.codex/agents/developer.toml). Implementa e mantém software,
+  investiga bugs e preserva contratos e interfaces, com mudanças pequenas e
+  validação proporcional. Respeita AGENTS.md, sandbox e autorizações, sem
+  refatorações oportunistas. Luna/low é a configuração inicial; decisões de
+  escalonamento cabem ao coordenador. Conhecimento detalhado de linguagens e
+  ecossistemas poderá vir de skills ou instruções de projeto.
+- Agente experimental: descoberta de configuração comprovada no CLI 0.166.0
+  em configuração temporária isolada, sem inferência; execução específica do
+  papel ainda não comprovada.
+- A sessão da avaliação original não expunha seleção de papel no spawn. Um único
+  filho nativo implementou código/testes com Luna/low solicitados; modelo efetivo não
   comprovado. Revisão pediu simplificações e reforço dos testes. Delegação nativa
   útil para separar implementação e pesquisa; ganho específico do especialista
   ainda pendente de tarefa real numa nova sessão com seleção do papel disponível.
