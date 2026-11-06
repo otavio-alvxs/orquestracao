@@ -1,0 +1,140 @@
+"""Synthetic histories only; no access to Codex's private session directory."""
+
+import contextlib
+import io
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+from inspect_sessions import inspect, main
+
+
+def event(kind, **payload):
+    return {"type": kind, "payload": payload}
+
+
+def meta(sid, source="cli"):
+    return event("session_meta", id=sid, source=source)
+
+
+def call(cid="call-1", **args):
+    return event("response_item", type="function_call", name="spawn_agent",
+                 call_id=cid, arguments=json.dumps(args))
+
+
+def output(cid="call-1", **result):
+    return event("response_item", type="function_call_output", call_id=cid,
+                 output=json.dumps(result))
+
+
+class InspectorTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+
+    def write(self, name, records):
+        path = self.root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("".join(json.dumps(r) + "\n" for r in records), encoding="utf-8")
+        return path
+
+    def test_confirmed_relations_settings_changes_and_read_only(self):
+        self.write("parent.jsonl", [meta("parent"),
+                   event("turn_context", model="gpt-6.1-sol", effort="high"),
+                   call(model="gpt-6-luna", reasoning_effort="low", message="SECRET"),
+                   output(agent_id="child", response="SECRET")])
+        self.write("nested/child.jsonl", [meta("child", {"subagent": {"thread_spawn": {
+                   "parent_thread_id": "parent", "depth": 1}}}),
+                   event("turn_context", model="gpt-6-luna", effort="medium"),
+                   event("turn_context", model="gpt-6-luna", effort="high")])
+        before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.root.rglob("*.jsonl")}
+        result = inspect(self.root)
+        sessions = {s["id"]: s for s in result["sessions"]}
+        self.assertEqual(sessions["parent"]["roles"], ["coordinator", "main"])
+        self.assertEqual(sessions["child"]["roles"], ["subagent"])
+        self.assertEqual(len(sessions["child"]["observed_settings"]), 2)
+        relation, = result["delegations"]
+        self.assertEqual(len(relation["evidence"]), 2)
+        self.assertEqual(relation["requested_settings"], [{"model": "gpt-6-luna", "effort": "low"}])
+        self.assertNotIn("SECRET", json.dumps(result))
+        for path, snapshot in before.items():
+            self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), snapshot)
+
+    def test_no_inference_from_prompts_failed_or_unmatched_calls(self):
+        path = self.write("single.jsonl", [meta("alone", "unknown"),
+                          call(model="gpt-6-luna"), output(error="SECRET"),
+                          output("unmatched", agent_id="invented"),
+                          event("event_msg", message="spawn_agent agent_id=ghost SECRET"),
+                          call("unfinished", model="gpt-6-luna")])
+        result = inspect(path)
+        self.assertEqual(result["delegations"], [])
+        self.assertEqual(result["sessions"], [{"id": "alone", "metadata_present": True,
+                                              "roles": [], "observed_settings": []}])
+
+    def test_missing_child_file_does_not_confirm_requested_model(self):
+        path = self.write("single.jsonl", [meta("parent"), call(model="gpt-6-luna"),
+                                          output(agent_id="child")])
+        child = inspect(path)["sessions"][0]
+        self.assertEqual(child["id"], "child")
+        self.assertFalse(child["metadata_present"])
+        self.assertEqual(child["observed_settings"], [])
+
+    def test_malformed_and_sensitive_content_never_echoed(self):
+        path = self.write("SECRET.jsonl", [meta("safe"),
+                          event("turn_context", model="SECRET with spaces", effort={}),
+                          event("response_item", type="message", content="SECRET"),
+                          event("response_item", type="function_call_output", output="SECRET"),
+                          ["SECRET"]])
+        with path.open("ab") as stream:
+            stream.write(b'{"SECRET":\n\xff\n')
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = main([str(path)])
+        self.assertEqual(status, 1)
+        self.assertNotIn("SECRET", stdout.getvalue() + stderr.getvalue())
+        self.assertEqual(json.loads(stdout.getvalue())["diagnostics"]["invalid_lines"], 3)
+
+    def test_unidentified_files_missing_input_and_symlinks(self):
+        self.write("empty.jsonl", [event("turn_context", model="gpt-6-luna")])
+        self.assertEqual(inspect(self.root)["diagnostics"]["files_without_session"], 1)
+        self.assertEqual(inspect(self.root / "missing")["diagnostics"]["read_errors"], 1)
+        (self.root / "link.jsonl").symlink_to(self.root / "empty.jsonl")
+        (self.root / "loop").symlink_to(self.root, target_is_directory=True)
+        result = inspect(self.root)
+        self.assertEqual(result["diagnostics"]["skipped_symlinks"], 2)
+        self.assertEqual(result["sessions"], [])
+
+    def test_session_boundary_resets_call_correlation(self):
+        path = self.write("two.jsonl", [meta("parent"), call(), meta("other"),
+                                       output(agent_id="wrong-child")])
+        self.assertEqual(inspect(path)["delegations"], [])
+
+    def test_subagent_excludes_inherited_parent_history_by_ordinal(self):
+        header = meta("child", {"subagent": {"thread_spawn": {
+            "parent_thread_id": "parent"}}})
+        header["payload"]["subagent_history_start_ordinal"] = 5
+        records = [header, meta("parent"),
+                   event("turn_context", model="gpt-6.1-sol", effort="medium"),
+                   call(model="gpt-6-luna", reasoning_effort="high"),
+                   output(agent_id="inherited-child"),
+                   event("turn_context", model="gpt-6-luna", effort="low")]
+        for ordinal, record in enumerate(records):
+            record["ordinal"] = ordinal
+        path = self.write("child.jsonl", records)
+        result = inspect(path)
+        sessions = {s["id"]: s for s in result["sessions"]}
+        self.assertEqual(set(sessions), {"child", "parent"})
+        self.assertEqual(sessions["child"]["observed_settings"], [
+            {"model": "gpt-6-luna", "effort": "low"}])
+        self.assertFalse(sessions["parent"]["metadata_present"])
+        self.assertEqual(sessions["parent"]["observed_settings"], [])
+        relation, = result["delegations"]
+        self.assertEqual(relation["parent_id"], "parent")
+        self.assertEqual(relation["child_id"], "child")
+        self.assertEqual(relation["requested_settings"], [])
+
+
+if __name__ == "__main__":
+    unittest.main()
