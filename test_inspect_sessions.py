@@ -54,6 +54,7 @@ class InspectorTests(unittest.TestCase):
         sessions = {s["id"]: s for s in result["sessions"]}
         self.assertEqual(sessions["parent"]["roles"], ["coordinator", "main"])
         self.assertEqual(sessions["child"]["roles"], ["subagent"])
+        self.assertEqual(sessions["child"]["observed_agent_roles"], [])
         self.assertEqual(len(sessions["child"]["observed_settings"]), 2)
         relation, = result["delegations"]
         self.assertEqual(len(relation["evidence"]), 2)
@@ -71,7 +72,54 @@ class InspectorTests(unittest.TestCase):
         result = inspect(path)
         self.assertEqual(result["delegations"], [])
         self.assertEqual(result["sessions"], [{"id": "alone", "metadata_present": True,
-                                              "roles": [], "observed_settings": []}])
+                                              "roles": [], "observed_settings": [],
+                                              "observed_agent_roles": []}])
+
+    def test_observed_custom_agent_roles_are_allowlisted_metadata(self):
+        cases = [
+            ("developer", "developer"),
+            ("reviewer", "reviewer"),
+            ("custom.v2-role", "custom.v2-role"),
+            ("bad role SECRET", None),
+            ("../../private", None),
+            (123, None),
+            (None, None),
+        ]
+        records = []
+        for index, (requested, observed) in enumerate(cases):
+            source = {"subagent": {"thread_spawn": {
+                "parent_thread_id": "parent", "agent_role": requested}}}
+            records.append(meta(f"child-{index}", source))
+        path = self.write("roles.jsonl", [meta("parent"), *records])
+        sessions = {s["id"]: s for s in inspect(path)["sessions"]}
+        for index, (requested, observed) in enumerate(cases):
+            self.assertEqual(sessions[f"child-{index}"]["observed_agent_roles"],
+                             [observed] if observed else [])
+        # Role comes from session metadata only, never from spawn arguments.
+        requested_only = self.write("requested.jsonl", [meta("requested-parent"),
+            call(agent_role="developer"), output(agent_id="requested-child")])
+        result = {s["id"]: s for s in inspect(requested_only)["sessions"]}
+        self.assertEqual(result["requested-child"]["observed_agent_roles"], [])
+        self.assertNotIn("bad role SECRET", json.dumps(sessions))
+
+    def test_observed_role_tree_and_inherited_metadata_boundary(self):
+        header = meta("worker", {"subagent": {"thread_spawn": {
+            "parent_thread_id": "parent", "agent_role": "reviewer"}}})
+        header["payload"]["subagent_history_start_ordinal"] = 4
+        inherited = meta("worker", {"subagent": {"thread_spawn": {
+            "parent_thread_id": "wrong", "agent_role": "developer"}}})
+        records = [header, inherited, event("event_msg", agent_role="private-role"),
+                   event("turn_context", model="gpt-6-luna", effort="low")]
+        for ordinal, record in enumerate(records):
+            record["ordinal"] = ordinal
+        path = self.write("worker.jsonl", records)
+        result = inspect(path)
+        worker = next(s for s in result["sessions"] if s["id"] == "worker")
+        self.assertEqual(worker["observed_agent_roles"], ["reviewer"])
+        rendered = render_tree(result)
+        self.assertIn("papel=reviewer", rendered)
+        self.assertNotIn("developer", rendered)
+        self.assertNotIn("private-role", rendered)
 
     def test_missing_child_file_does_not_confirm_requested_model(self):
         path = self.write("single.jsonl", [meta("parent"), call(model="gpt-6-luna"),

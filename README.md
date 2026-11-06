@@ -11,6 +11,10 @@ em uma auditoria documental com a primeira skill externa instalada localmente,
 [`docs-sync-audit`](.agents/skills/docs-sync-audit/SKILL.md). Na v0.5 (Missão 011D),
 a reutilização pessoal do Developer no TARS foi **VERIFIED**, com arquivo TOML
 regular e papel/modelo/esforço confirmados nos metadados próprios do filho.
+Na v0.6 (Missão 012), o inspetor também mostra o papel personalizado observado.
+O Developer implementou e houve revisão independente com Terra. Na Missão 012B,
+o Reviewer personalizado foi **VERIFIED** numa nova sessão, com papel, modelo e
+esforço confirmados nos metadados próprios do filho.
 
 Conforme informado para este bootstrap, a configuração global do Codex usa Sol como coordenador, Luna como padrão para subagentes e concorrência inicial máxima de dois filhos. Essa configuração é externa ao repositório; não foi verificada nem alterada aqui. O limite é ajustável conforme necessidade e recursos disponíveis.
 
@@ -92,6 +96,110 @@ arquivos, falhas de leitura, linhas inválidas ou arquivos sem sessão identific
 (o relatório parcial continua disponível); `2` para erro de argumentos ou raiz
 inexistente (mensagem de erro sem repetir o identificador fornecido).
 Os testes criam somente históricos sintéticos em diretórios temporários.
+
+## Papel observado e revisão independente — v0.6 (Missão 012)
+
+Cada sessão no JSON inclui `observed_agent_roles`: lista ordenada, sem duplicatas,
+extraída exclusivamente de
+`session_meta.payload.source.subagent.thread_spawn.agent_role`. A lista fica vazia
+quando o campo está ausente ou inválido, inclusive nas sessões apenas referenciadas.
+`roles` preserva seus papéis topológicos (`main`, `coordinator`, `subagent`).
+Argumentos de `spawn_agent`, nomes de tarefas e texto livre não comprovam o papel
+executado. O limite de histórico herdado continua sendo respeitado.
+
+A allowlist existente aceita identificadores de 1 a 128 caracteres ASCII:
+primeiro caractere alfanumérico, demais alfanuméricos, `_`, `.` ou `-`.
+Papéis desconhecidos com formato válido são preservados; isso não comprova sua
+existência no catálogo. Valores fora desse formato são descartados, sem eco.
+A árvore acrescenta `papel=...` somente quando há papel observado e continua
+aceitando relatórios anteriores sem o novo campo. Filtros, ciclos e resumo mantêm
+o comportamento anterior.
+
+Exemplo inteiramente sintético de entrada JSONL:
+
+```jsonl
+{"type":"session_meta","payload":{"id":"synthetic-child","source":{"subagent":{"thread_spawn":{"parent_thread_id":"synthetic-parent","agent_role":"developer"}}}}}
+{"type":"turn_context","payload":{"model":"gpt-6-luna","effort":"low"}}
+```
+
+Na sessão `synthetic-child`, o JSON inclui
+`"observed_agent_roles": ["developer"]`. Trecho correspondente da árvore:
+
+```text
+└── synthetic-child [modelo=gpt-6-luna esforço=low papel=developer]
+```
+
+O novo [`reviewer`](.codex/agents/reviewer.toml), independente de linguagem,
+revisa bugs, regressões, contratos, privacidade e cobertura dos comportamentos
+modificados. Exige achados comprováveis com impacto, cenário, arquivo e linha;
+não edita arquivos, publica ou altera permissões. Evita preferências de estilo e
+auditorias extensas em mudanças triviais. Sua configuração local é
+`gpt-6.1-terra` / `medium`, presente entre os modelos/esforços do catálogo instalado.
+O TOML segue o formato da [documentação oficial de subagentes](https://learn.chatgpt.com/docs/agent-configuration/subagents).
+Não houve promoção pessoal nem alteração das configurações do Sol ou do Developer.
+
+### Resultado operacional — tentativa inicial (Missão 012)
+
+A [PR #5](https://github.com/otavio-alvxs/orquestracao/pull/5) foi confirmada integrada
+em `0c322b243d7da892718ffa8e4329964290a9e70a`; a main foi sincronizada por
+fast-forward antes de criar `feat/v0.6-independent-reviewer`, com árvore local limpa.
+O coordenador delegou somente código e testes ao Developer. Depois da implementação,
+enviou diff e requisitos ao revisor independente, sem avaliação pronta do implementador.
+
+| Etapa | Seleção e evidência própria da execução |
+| --- | --- |
+| Developer | `agent_type="developer"` aceito; `agent_role=developer` no cabeçalho; `turn_context` próprio confirma `gpt-6-luna` / `low` |
+| Reviewer personalizado (tentativa inicial) | `agent_type="reviewer"` recusado com `unknown agent_type 'reviewer'`; execução não validada naquela sessão, superada pela Missão 012B |
+| Revisão pelo fluxo disponível | Agente `default`, sem histórico herdado (`fork_turns="none"`), com Terra/medium solicitados; cabeçalho confirma `agent_role=default`, `turn_context` confirma `gpt-6.1-terra` / `medium` |
+| Descoberta do novo arquivo | `codex debug prompt-input` no CLI 0.166.0, com CODEX_HOME temporário isolado e sem inferência, expôs `reviewer` no catálogo; descoberta não comprova seleção no coordenador já aberto |
+
+Só foram consultados os campos estruturados dos dois filhos criados nesta missão,
+com identidade conferida. No Developer, registros anteriores a
+`subagent_history_start_ordinal` foram excluídos; no revisor sem fork, esse limite
+não estava presente. Não foram consultados históricos privados preexistentes nem
+publicados identificadores reais, caminhos, prompts ou respostas internas.
+Modelo/esforço são evidências do contexto do turno, não telemetria do provedor.
+
+A revisão independente não encontrou defeitos confirmados; nenhuma correção foi
+necessária. O coordenador integrou o diff. `python3 -B -m unittest discover -v`
+passou com **21 testes sintéticos**, cobrindo papéis conhecidos, desconhecidos,
+ausentes e inválidos, separação de argumentos solicitados, histórico herdado e as
+regressões existentes. `git diff --check` e a leitura do TOML também passaram.
+
+A separação foi útil para obter uma segunda análise de funcionalidade, privacidade
+e compatibilidade sem misturar autoria e revisão. Este piloto não mede ganho de
+qualidade, tempo ou custo. A validação do papel personalizado, pendente na tentativa
+inicial, foi concluída na Missão 012B abaixo.
+
+### Reviewer personalizado — VERIFIED (Missão 012B)
+
+A nova sessão expôs `reviewer` no catálogo nativo. A seleção explícita por
+`agent_type="reviewer"`, com `fork_turns="none"` e sem sobrescrever modelo ou
+esforço, foi aceita. O filho revisou independentemente `main...HEAD` em
+`d7793e4dc16cfa49342340ff21eab3b65334a209`, com foco em bugs concretos,
+privacidade, compatibilidade e testes, somente em leitura.
+
+| Evidência estruturada da execução | Resultado observado |
+| --- | --- |
+| `session_meta.payload.source.subagent.thread_spawn.agent_role` | `reviewer` |
+| `turn_context.payload.model` | `gpt-6.1-terra` |
+| `turn_context.payload.effort` | `medium` |
+| Histórico herdado | Spawn sem fork; `subagent_history_start_ordinal` ausente no cabeçalho |
+
+O coordenador conferiu o vínculo do cabeçalho com a sessão atual e extraiu somente
+os campos estruturados do filho recém-criado. Nenhum registro herdado entrou na
+comprovação; não foram lidos históricos preexistentes nem publicados identidades,
+caminhos ou conteúdo interno. Os valores observados vêm do contexto próprio do
+turno, não do TOML, dos argumentos solicitados ou de autodeclaração do revisor;
+não constituem telemetria do provedor.
+
+Nenhum defeito confirmado foi encontrado. A revisão verificou extração dos papéis,
+limite de histórico herdado, renderização e compatibilidade com relatórios antigos;
+`python3 -B -m unittest discover -v` passou com **21 testes sintéticos**.
+Não houve correção de código. A continuação altera somente README e ROADMAP e
+atualiza a descrição da mesma PR #6, mantida aberta em draft. A comprovação vale
+para esta execução; não mede ganhos de qualidade, tempo ou custo nem garante
+disponibilidade em outras interfaces.
 
 ## Primeiro especialista e catálogo (Missão 009)
 
