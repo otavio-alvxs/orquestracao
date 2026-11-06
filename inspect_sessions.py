@@ -167,12 +167,77 @@ def inspect(path):
                 delegations=[edges[key] for key in sorted(edges)], diagnostics=counts)
 
 
+def render_tree(result):
+    """Render allowlisted session metadata as a bounded, iterative tree."""
+    sessions = {item["id"]: item for item in result["sessions"]}
+    children = {sid: [] for sid in sessions}
+    referenced = set()
+    for relation in result["delegations"]:
+        parent, child = relation["parent_id"], relation["child_id"]
+        children.setdefault(parent, []).append(child)
+        referenced.add(child)
+        children.setdefault(child, [])
+    for values in children.values():
+        values.sort()
+
+    def label(sid):
+        session = sessions.get(sid)
+        if session is None:
+            return f"{sid} [sessão referenciada sem metadados]"
+        settings = session["observed_settings"]
+        if settings:
+            observed = ", ".join(
+                f"modelo={item['model'] or '?'} esforço={item['effort'] or '?'}"
+                for item in settings)
+        else:
+            observed = "modelo=? esforço=?"
+        missing = " [metadados ausentes]" if not session["metadata_present"] else ""
+        return f"{sid} [{observed}]{missing}"
+
+    roots = [sid for sid in sorted(sessions) if sid not in referenced]
+    # A pure cycle has no root. Starting its least ID makes it visible; the
+    # visited set below renders its back edge once and cannot recurse forever.
+    roots.extend(sid for sid in sorted(sessions) if sid in referenced)
+    lines = []
+    expanded = set()
+    for root in roots:
+        if root in expanded:
+            continue
+        lines.append(label(root))
+        expanded.add(root)
+        stack = []
+        descendants = children.get(root, [])
+        for index in range(len(descendants) - 1, -1, -1):
+            last = index == len(descendants) - 1
+            stack.append((descendants[index], "", "└── " if last else "├── "))
+        while stack:
+            sid, prefix, connector = stack.pop()
+            lines.append(prefix + connector + label(sid))
+            if sid in expanded:
+                lines[-1] += " (ciclo ou referência repetida)"
+                continue
+            expanded.add(sid)
+            descendants = children.get(sid, [])
+            for index in range(len(descendants) - 1, -1, -1):
+                last = index == len(descendants) - 1
+                stack.append((descendants[index], prefix + ("    " if connector == "└── " else "│   "),
+                              "└── " if last else "├── "))
+    lines.append("")
+    lines.append(f"Resumo: {len(sessions)} sessões, {len(result['delegations'])} delegações")
+    return "\n".join(lines)
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("history", type=Path, help="JSONL file or directory (recursive)")
+    parser.add_argument("--format", choices=("json", "tree"), default="json",
+                        help="output format (default: json)")
     args = parser.parse_args(argv)
     result = inspect(args.history)
-    print(json.dumps(result, indent=2, ensure_ascii=True))
+    if args.format == "tree":
+        print(render_tree(result))
+    else:
+        print(json.dumps(result, indent=2, ensure_ascii=True))
     diagnostics = result["diagnostics"]
     return int(not diagnostics["files"] or any(
         diagnostics[key] for key in ("invalid_lines", "read_errors", "files_without_session")))
