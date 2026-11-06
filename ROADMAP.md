@@ -69,8 +69,35 @@ abaixo permanecem propostas de evolução.
 - Piloto comparou documentação com CLI, testes e definição do agente. Comandos,
   argumentos e códigos de saída coerentes; corrigidos nome antigo e estados do
   catálogo/validação. Inspetor preservado; 19 testes existentes passaram.
-- Reutilização local ou futura promoção pessoal por link documentadas no README;
-  nenhuma promoção global, mudança de outro projeto ou nova infraestrutura.
+- Na v0.4, reutilização local e futura promoção pessoal por link foram documentadas;
+  naquela missão não houve promoção global, mudança de outro projeto ou nova
+  infraestrutura. A recomendação de link foi substituída na v0.5.
+
+## v0.5 — Missão 011 (fechamento 011D)
+
+- **Promoção pessoal e reutilização do Developer no TARS: VERIFIED.** O symlink
+  foi substituído por TOML regular em `~/.codex/agents/developer.toml`, com conteúdo
+  correspondente à definição versionada do Orquestração.
+- Sem definição local homônima no TARS, a seleção explícita de
+  `agent_type="developer"` funcionou. Metadados estruturados próprios da sessão
+  filha confirmaram `agent_role=developer`, `gpt-6-luna` e esforço `low`, excluindo
+  histórico herdado. Não se publicam históricos privados.
+- O Developer concluiu a análise somente de leitura de `automation reminder`,
+  cobrindo validação, persistência, runtime e testes. Nenhum arquivo ou estado
+  operacional do TARS foi alterado. O levantamento inicial do coordenador e o
+  inventário de skills permanecem no README com sua procedência original.
+- Histórico preservado: a tentativa inicial ficou **BLOCKED** por filesystem
+  somente de leitura; esses bloqueios foram superados. Na continuação, o symlink
+  mostrou incompatibilidade com o carregamento do TOML no Codex 0.166.0 neste
+  ambiente, resolvida com arquivo regular. Erro de glob do Zsh resolvido sem
+  mudanças globais no shell.
+- README recomenda instalação regular sem sobrescrita, verificação de integridade,
+  registro privado de procedência e atualização explícita. Rollback remove apenas
+  a cópia pessoal comprovadamente instalada, após conferir conteúdo e procedência;
+  o procedimento destinado ao antigo link foi retirado.
+- O fechamento é documental, baseado no resultado final comprovado informado;
+  não repete o piloto nem altera código, agentes, skills, configurações pessoais
+  ou outros repositórios. Nenhuma infraestrutura nova, merge, tag ou release.
 
 ## Próximas capacidades prioritárias
 
