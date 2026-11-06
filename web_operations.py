@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from codex_runner import CodexRun, validate_project
+from app_server import AppServerRun
 
 HOST = "127.0.0.1"
 MAX_BODY = 70 * 1024
@@ -46,6 +47,7 @@ class OperationsServer:
         self.codex = codex
         self.process_factory = process_factory
         self.session = Session()
+        self.session.engine = "exec"
         self.server: asyncio.AbstractServer | None = None
 
     async def start(self, port: int = 8765) -> int:
@@ -55,8 +57,14 @@ class OperationsServer:
     async def close(self) -> None:
         if self.session.run and self.session.run.state.status not in TERMINAL:
             await self.session.run.cancel()
+        if isinstance(self.session.run, AppServerRun):
+            await self.session.run.close()
         if self.session.task and not self.session.task.done():
-            await asyncio.gather(self.session.task, return_exceptions=True)
+            try:
+                await asyncio.wait_for(asyncio.gather(self.session.task, return_exceptions=True), 3)
+            except asyncio.TimeoutError:
+                self.session.task.cancel()
+                await asyncio.gather(self.session.task, return_exceptions=True)
         if self.server:
             self.server.close()
             await self.server.wait_closed()
@@ -138,6 +146,9 @@ class OperationsServer:
                 if path == "/api/run":
                     await self._start_run(payload, writer)
                     return
+                if path == "/api/message":
+                    await self._continue_run(payload, writer)
+                    return
                 if path == "/api/cancel":
                     run = self.session.run
                     if run and run.state.status not in TERMINAL:
@@ -168,25 +179,41 @@ class OperationsServer:
             await self._response(writer, 409, "Já existe uma execução ativa".encode())
             return
         try:
+            engine = payload.get("engine", "exec")
+            if engine not in ("exec", "app-server"):
+                await self._response(writer, 400, b"Executor invalido")
+                return
             kwargs = {"codex": self.codex}
             if self.process_factory:
                 kwargs["process_factory"] = self.process_factory
-            run = CodexRun(project, prompt, **kwargs)
+            run = AppServerRun(project, prompt, **kwargs) if engine == "app-server" else CodexRun(project, prompt, **kwargs)
         except ValueError:
             await self._response(writer, 400, "Não foi possível validar a tarefa ou o diretório".encode())
             return
+        if isinstance(self.session.run, AppServerRun):
+            await self.session.run.close()
         # Keep the event ID monotonic, but never replay a previous task into a new view.
         self.session.events.clear()
         self.session.run = run
+        self.session.engine = engine
         self.session.task = asyncio.create_task(self._execute(run))
+        if engine == "app-server":
+            await self.session.emit("message", {"role": "user", "text": prompt})
         await self.session.emit("state", self._snapshot())
         await self._response(writer, 202, b'{"ok":true}', "application/json")
 
     async def _execute(self, run: CodexRun) -> None:
+        assistant_message_emitted = False
         try:
             async for message in run.events():
+                if isinstance(run, AppServerRun) and run.state.status in TERMINAL and run.state.final and not assistant_message_emitted:
+                    await self.session.emit("message", {"role": "assistant", "text": run.state.final})
+                    assistant_message_emitted = True
                 await self.session.emit("event", {"message": message})
                 await self.session.emit("state", self._snapshot())
+            if isinstance(run, AppServerRun) and run.state.final and not assistant_message_emitted:
+                await self.session.emit("message", {"role": "assistant", "text": run.state.final})
+                assistant_message_emitted = True
             await self.session.emit("state", self._snapshot())
         except Exception:
             await run.cancel()
@@ -194,6 +221,28 @@ class OperationsServer:
             run.state.error = "Erro interno ao acompanhar o Codex."
             run.state.finish_timing()
             await self.session.emit("state", self._snapshot())
+
+    async def _continue_run(self, payload: dict, writer: asyncio.StreamWriter) -> None:
+        run = self.session.run
+        prompt = payload.get("prompt")
+        if self.session.engine != "app-server" or not isinstance(run, AppServerRun) or not run.thread_id:
+            await self._response(writer, 409, b"Nao existe sessao app-server ativa")
+            return
+        if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
+            await self._response(writer, 400, b"A mensagem deve conter entre 1 e 16000 caracteres")
+            return
+        if self.session.task and not self.session.task.done():
+            await self._response(writer, 409, b"Ja existe um turno ativo")
+            return
+        run.prompt = prompt.strip()
+        run.cancel_requested = False
+        run.turn_id = None
+        run.state.status = "starting"
+        run.state.error = ""
+        self.session.task = asyncio.create_task(self._execute(run))
+        await self.session.emit("message", {"role": "user", "text": run.prompt})
+        await self.session.emit("state", self._snapshot())
+        await self._response(writer, 202, b'{"ok":true}', "application/json")
 
     def _snapshot(self) -> dict:
         run = self.session.run
@@ -203,9 +252,12 @@ class OperationsServer:
         elapsed = state.duration_seconds
         if elapsed is None and state.started_at is not None:
             elapsed = max(0, time.monotonic() - state.started_at)
-        return {"status": state.status, "result": state.final if state.status in TERMINAL else "", "error": state.error,
+        agents = getattr(state, "agents", {})
+        result = state.final if isinstance(run, AppServerRun) or state.status in TERMINAL else ""
+        return {"status": state.status, "result": result, "error": state.error,
                 "duration_seconds": elapsed, "input_tokens": state.input_tokens,
-                "output_tokens": state.output_tokens, "cached_input_tokens": state.cached_input_tokens}
+                "output_tokens": state.output_tokens, "cached_input_tokens": state.cached_input_tokens,
+                "thread_id": getattr(run, "thread_id", None), "agents": agents}
 
     async def _stream(self, writer: asyncio.StreamWriter, last_id: int) -> None:
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nX-Content-Type-Options: nosniff\r\n\r\n")

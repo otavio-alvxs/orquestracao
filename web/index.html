@@ -31,12 +31,17 @@
         <textarea id="prompt" maxlength="16000" placeholder="Ex.: Analise a estrutura do projeto e resuma seus principais componentes…" spellcheck="true"></textarea>
         <div class="form-footer"><span class="hint">A execução não altera arquivos.</span><button id="start" class="primary"><span class="play">▶</span> Iniciar tarefa <kbd>⌘ ↵</kbd></button></div>
       </div>
+      <div class="field task-field"><label for="engine">EXECUTOR</label><div class="select-wrap"><select id="engine"><option value="app-server">Codex app-server · sessão contínua</option><option value="exec">codex exec · execução isolada</option></select></div></div>
     </section>
 
     <section id="execution" class="execution hidden" aria-live="polite">
       <div class="run-heading"><div><p class="eyebrow">EXECUÇÃO ATUAL</p><h2 id="run-title">Tarefa</h2></div><span id="status" class="status"><i></i><span>Aguardando</span></span></div>
       <div class="progress-track"><span id="progress"></span></div>
       <div class="run-meta"><span id="project-label"></span><span id="elapsed">—</span></div>
+      <div id="session-id" class="session-id hidden"></div>
+      <ol id="conversation" class="conversation" aria-label="Conversa atual"></ol>
+      <div id="composer" class="composer hidden"><textarea id="message" maxlength="16000" placeholder="Enviar uma mensagem nesta sessão…"></textarea><button id="send-message" class="primary">Enviar</button></div>
+      <div id="agents" class="agents hidden"><span>Agentes observados</span><ul id="agent-list"></ul></div>
       <div id="result-panel" class="result-panel hidden"><div class="result-title"><span>RESULTADO</span><span id="tokens"></span></div><pre id="result"></pre></div>
       <div id="error" class="error hidden"></div>
       <div class="run-actions"><button id="cancel" class="cancel">Cancelar execução</button><button id="new-task" class="new-task hidden">Nova tarefa <span>↗</span></button></div>
