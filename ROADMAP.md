@@ -72,6 +72,21 @@ abaixo permanecem propostas de evolução.
 - Reutilização local ou futura promoção pessoal por link documentadas no README;
   nenhuma promoção global, mudança de outro projeto ou nova infraestrutura.
 
+## v0.5 — Missão 011
+
+- Promoção pessoal do `developer` tentada por link para a definição versionada;
+  **BLOCKED** pelo filesystem somente de leitura, sem elevação, cópia ou mudança
+  de configuração global. Fonte TOML íntegra e Luna/low configurados.
+- **Descoberta global e piloto delegado no TARS: BLOCKED.** Contexto novo no
+  destino indisponível pelo mesmo limite; nenhum papel/modelo/esforço de filho
+  observado. A disponibilidade local da v0.4 não comprova reutilização pessoal.
+- Análise direta, somente de leitura, do fluxo `automation reminder` registrada
+  no README, com referências e limites. Nenhuma alteração ou ação operacional
+  no TARS. Skills existentes apenas inventariadas, sem instalação/promoção.
+- README registra comando manual sem sobrescrita, reversão restrita ao link e
+  risco da checkout mutável. Reutilização real continua pendente de nova sessão
+  após promoção efetiva; nenhuma infraestrutura nova.
+
 ## Próximas capacidades prioritárias
 
 - Evoluir a observabilidade somente de leitura a partir das evidências existentes,

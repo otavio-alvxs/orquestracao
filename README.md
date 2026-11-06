@@ -100,7 +100,8 @@ sem refatorações oportunistas, respeitando AGENTS.md, sandbox e autorizações
 Configura inicialmente `gpt-6-luna` com esforço `low`; decisões de escalonamento
 cabem ao coordenador. Conhecimento específico de linguagens e ecossistemas
 poderá vir de skills ou instruções de projeto, sem ser embutido no agente.
-Continua restrito ao repositório para avaliação.
+A promoção pessoal foi tentada na Missão 011, mas permanece bloqueada pelo
+sandbox; a disponibilidade comprovada continua sendo a local.
 
 ### Validação operacional — Missão 010
 
@@ -169,18 +170,139 @@ o Codex descobre arquivos TOML em `.codex/agents/` do projeto e em
 Disponibilizar o arquivo permite descoberta; comprovar invocação exige seleção
 explícita e evidência de execução, como no piloto acima.
 
-Em TARS, Financeiro ou outro repositório, uma futura autorização pode permitir
-copiar a definição versionada para `.codex/agents/developer.toml` do projeto.
-Para promoção pessoal simples e reversível, pode-se criar um link simbólico em
-`~/.codex/agents/developer.toml` apontando para o arquivo versionado numa checkout
-estável, após verificar colisões e obter autorização. Remover somente esse link
-reverte a disponibilização; mover a checkout quebra o link e atualizá-la muda a
-definição compartilhada. Revalidar descoberta e invocação numa nova sessão.
+A fonte única é `.codex/agents/developer.toml` desta checkout. O destino pessoal
+previsto é `~/.codex/agents/developer.toml`, por link simbólico para o caminho
+absoluto da fonte. Não copiar a definição para outros projetos nem alterar
+`~/.codex/config.toml`. O agente deve respeitar o AGENTS.md e as skills aplicáveis
+ao destino; o link não concede permissões extras.
 
-O agente mantém o AGENTS.md e as skills aplicáveis ao projeto de destino e herda
-permissões, provedor e servidores MCP do pai. A definição não concede acesso
-extra. Evitar definições divergentes com o mesmo nome. Nenhum outro projeto ou
-escopo pessoal foi alterado nesta missão; não há instalador ou sincronizador.
+### Developer compartilhado — Missão 011 (v0.5)
+
+**Promoção pessoal: BLOCKED. Descoberta global: BLOCKED. Delegação no TARS:
+BLOCKED.** A missão não comprovou reutilização global.
+
+Preparação: árvore local limpa, [PR #4](https://github.com/otavio-alvxs/orquestracao/pull/4)
+confirmada integrada em `ff5380f4e3433d6302e03da1933c46cf9e18dc8e`, `main`
+atualizada por fast-forward e branch `feat/v0.5-shared-developer` criada.
+
+| Verificação | Resultado observado |
+| --- | --- |
+| Fonte | Caminho absoluto resolvido, TOML válido e bytes idênticos à definição versionada no HEAD |
+| Integridade SHA-256 | `4420d5755db88a80fe4897ef44884f1b98a3a6c635a9cc459b663aef783aef10` |
+| Configuração da fonte | `name=developer`, `model=gpt-6-luna`, `model_reasoning_effort=low` |
+| Destino pessoal | Diretório `~/.codex` regular, sem override de CODEX_HOME; `agents/` e o link inexistentes antes e depois da tentativa |
+| Diretório esperado | Documentação oficial indica `~/.codex/agents/`; CLI instalada: 0.166.0. A descoberta nesta instalação não pôde ser validada |
+| Tentativa de promoção | Criação normal do diretório pessoal recusada com `Read-only file system`; nenhum link criado, sem elevação ou sobrescrita |
+| Contexto novo no TARS | `codex debug prompt-input` executado a partir do destino, sem inferência; exit 1, filesystem somente de leitura e catálogo indisponível |
+| Conflito local no TARS | `.codex/` inexistente; nenhuma definição local do Developer |
+| Papel/modelo/esforço do piloto | Não observados: nenhum filho criado no TARS e nenhum histórico privado lido |
+
+O catálogo desta sessão do Orquestração oferece `agent_type="developer"`, mas
+isso comprova apenas a disponibilidade local já registrada na Missão 010.
+Não foi usado como evidência de descoberta pessoal ou execução no TARS.
+Luna/low acima são valores da fonte, não configuração observada de um novo filho.
+Não se copiou a definição nem se criou configuração temporária para simular promoção.
+
+#### Análise de leitura no TARS
+
+Análise realizada diretamente pelo coordenador, **sem atribuí-la ao Developer**,
+na checkout `8ca19bf8368df99d99b782f9d1aab2cfd5fa51a2`. Foram lidos AGENTS.md,
+estado/plano vigente, contrato de notificações, README e código/testes pertinentes.
+Nenhum arquivo do TARS foi modificado; nenhum comando operacional, teste, serviço,
+notificação, lembrete ou banco real foi executado/acessado.
+As referências abaixo são relativas ao repositório
+[`otavio-alvxs/TARS`](https://github.com/otavio-alvxs/TARS/tree/8ca19bf8368df99d99b782f9d1aab2cfd5fa51a2).
+
+- Entrada: `src/tars/main.py:71` (`main`) encaminha `automation` para
+  `src/tars/automation_command.py:37` (`processar_comando_automation`), que
+  seleciona `_agendar_lembrete` (`:131`). Exige exatamente data/hora e mensagem.
+- Validação: `_parse_scheduled_for` (`automation_command.py:149`) exige ISO 8601
+  com timezone explícito. `src/tars/local_notification_tool.py:12`
+  (`validate_local_notification_message`) rejeita texto vazio, categorias Unicode
+  Cc/Cf/Cs e mais de 1024 bytes UTF-8, preservando o texto literal.
+  A validação precede criação de workspace e abertura do store.
+- Persistência: `_agendar_lembrete` cria `Automation` inicialmente `SCHEDULED`
+  com `ToolCall("notify_local", {"message": texto})`; chama
+  `src/tars/sqlite_automation_store.py:27` (`save`). Não autoriza nem executa a
+  Tool ou inicia runtime. A confirmação informa ID e horário, sem a mensagem.
+- Execução posterior: `automation run --enable-local-notifications` compõe
+  `src/tars/builtin_automation_runtime.py` com registro de `notify_local`,
+  allowlist e política auditada. `automation_runtime.py` faz recovery e polling;
+  `automation_processor.py` reivindica uma intenção vencida e
+  `automation_runner.py` passa pelo executor autorizado e grava o estado terminal.
+- Testes relevantes, lidos e não executados: `tests/test_automation_reminder.py`
+  cobre literalidade, validação sem efeitos, persistência e erro sem retry;
+  `tests/test_automation_local_notifications.py` cobre opt-in/negação/recovery;
+  `tests/test_local_reminder_acceptance.py` cobre atraso, restart e cancelamento.
+  `tests/test_sqlite_automation_store.py` e `tests/test_automation_recovery.py`
+  cobrem store e recuperação.
+- Pontos de atenção do contrato existente: sem opt-in, a intenção pode falhar por
+  negação e não é reexecutada ao habilitar depois. Efeito externo e checkpoint
+  não são atômicos; recovery não reenvia notificações de resultado desconhecido.
+  O texto fica no SQLite e pode aparecer no histórico do shell/processos.
+  Não foi identificado defeito novo confirmado neste escopo de leitura.
+
+#### Escopo das skills
+
+| Skill | Escopo encontrado | Conflitos e uso futuro |
+| --- | --- | --- |
+| `docs-sync-audit` | Local ao Orquestração, `.agents/skills/docs-sync-audit/` | Sem homônimo pessoal/no TARS; candidata pessoal se auditorias em outros projetos demonstrarem uso recorrente |
+| `open-pr` | Pessoal, `~/.agents/skills/open-pr/` | Sem homônimo local; reutilizada na publicação desta missão, manter escopo pessoal |
+| `tars-small-pr` | Local ao TARS, `.agents/skills/tars-small-pr/` | Específica dos contratos do TARS; manter local. Sobrepõe etapas Git/PR de `open-pr`, sem colisão de nome; não se aplica ao piloto somente de leitura |
+
+Nenhuma skill instalada, promovida ou copiada. `docs-sync-audit` não foi aplicada
+no TARS; a inspeção das skills limitou-se a escopo e instruções existentes.
+
+#### Promoção manual e reversão segura
+
+O sandbox bloqueou a promoção; o usuário pode executar o trecho abaixo fora dele,
+**a partir da raiz desta checkout**, após revisar a definição. O comando não foi
+executado nesta missão. Recusa links nos diretórios pessoais e colisões no destino;
+`ln -sT` (GNU/Linux), sem `-f`, também recusa sobrescrita em caso de corrida.
+
+```sh
+source_path="$(pwd -P)/.codex/agents/developer.toml"
+agent_dir="$HOME/.codex/agents"
+agent_link="$agent_dir/developer.toml"
+if [ -f "$source_path" ] && [ -d "$HOME/.codex" ] &&
+   [ ! -L "$HOME/.codex" ] && [ ! -L "$agent_dir" ] &&
+   { [ ! -e "$agent_dir" ] || [ -d "$agent_dir" ]; } &&
+   [ ! -e "$agent_link" ] && [ ! -L "$agent_link" ]; then
+  mkdir -p -- "$agent_dir" && ln -sT -- "$source_path" "$agent_link"
+else
+  echo "Fonte ausente ou destino conflitante; nada criado."
+fi
+```
+
+Depois, abrir **nova sessão no TARS**, confirmar o catálogo e selecionar
+explicitamente `agent_type="developer"` para a análise autorizada. Verificar
+`agent_role=developer` e modelo/esforço em metadados próprios do filho, excluindo
+histórico herdado. Confirmar fonte pessoal e ausência de definição local homônima.
+A execução manual do link, sozinha, não transforma os estados BLOCKED em VERIFIED.
+
+Para desfazer **somente o link criado por esta promoção**, executar da mesma
+checkout, após confirmar sua procedência:
+
+```sh
+source_path="$(pwd -P)/.codex/agents/developer.toml"
+agent_link="$HOME/.codex/agents/developer.toml"
+if [ -L "$agent_link" ] && [ "$(readlink -- "$agent_link")" = "$source_path" ]; then
+  rm -- "$agent_link"
+else
+  echo "Link ausente ou destino diferente; nada removido."
+fi
+```
+
+Não remover a definição versionada, diretórios ou agentes pessoais preexistentes;
+não alterar configuração global para reverter. Nesta execução bloqueada não há
+link a remover. O link depende de uma checkout mutável: mover a checkout o quebra,
+e mudanças futuras na fonte alteram o agente pessoal. Revisar alterações nesse
+arquivo antes de integrá-las.
+
+Validação desta entrega documental: TOML analisado, integridade comparada ao Git,
+escopos inventariados, referências de código conferidas e `git diff --check`.
+Testes funcionais do Orquestração dispensados: inspetor, testes, agente e skills
+não foram alterados. A comprovação de reutilização real permanece pendente.
 
 ## Visão futura
 
