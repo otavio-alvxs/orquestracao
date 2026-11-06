@@ -30,6 +30,31 @@ necessidade prática, benefício demonstrável, escopo e autorização próprios
 O inspetor não é um dashboard nem um gerenciador de agentes. As capacidades
 abaixo permanecem propostas de evolução.
 
+## v0.3 — Missão 009
+
+- `--format tree --root <session-id>` limita a visualização e o resumo à raiz
+  escolhida e seus descendentes confirmados, preservando proteção contra ciclos,
+  indicação de metadados ausentes e comportamento sem filtro. Raiz inexistente
+  produz erro com código 2. Testes usam somente dados sintéticos.
+- Primeiro especialista de desenvolvimento de software independente de linguagem:
+  [`developer`](.codex/agents/developer.toml). Implementa e mantém software,
+  investiga bugs e preserva contratos e interfaces, com mudanças pequenas e
+  validação proporcional. Respeita AGENTS.md, sandbox e autorizações, sem
+  refatorações oportunistas. Luna/low é a configuração inicial; decisões de
+  escalonamento cabem ao coordenador. Conhecimento detalhado de linguagens e
+  ecossistemas poderá vir de skills ou instruções de projeto.
+- Agente experimental: descoberta de configuração comprovada no CLI 0.166.0
+  em configuração temporária isolada, sem inferência; execução específica do
+  papel ainda não comprovada.
+- A sessão da avaliação original não expunha seleção de papel no spawn. Um único
+  filho nativo implementou código/testes com Luna/low solicitados; modelo efetivo não
+  comprovado. Revisão pediu simplificações e reforço dos testes. Delegação nativa
+  útil para separar implementação e pesquisa; ganho específico do especialista
+  ainda pendente de tarefa real numa nova sessão com seleção do papel disponível.
+  Nenhuma configuração global foi alterada.
+- [Catálogo de oito candidatas](SKILLS_CANDIDATES.md) preserva a pesquisa,
+  o inventário e os critérios para adoção seletiva futura; nenhuma instalação.
+
 ## Próximas capacidades prioritárias
 
 - Evoluir a observabilidade somente de leitura a partir das evidências existentes,

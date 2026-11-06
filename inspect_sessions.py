@@ -167,7 +167,7 @@ def inspect(path):
                 delegations=[edges[key] for key in sorted(edges)], diagnostics=counts)
 
 
-def render_tree(result):
+def render_tree(result, root_id=None):
     """Render allowlisted session metadata as a bounded, iterative tree."""
     sessions = {item["id"]: item for item in result["sessions"]}
     children = {sid: [] for sid in sessions}
@@ -179,6 +179,20 @@ def render_tree(result):
         children.setdefault(child, [])
     for values in children.values():
         values.sort()
+
+    if root_id is not None:
+        if root_id not in sessions:
+            raise ValueError("ID de sessão raiz inexistente")
+        reachable, pending = set(), [root_id]
+        while pending:
+            sid = pending.pop()
+            if sid in reachable:
+                continue
+            reachable.add(sid)
+            pending.extend(children.get(sid, ()))
+        sessions = {sid: sessions[sid] for sid in reachable if sid in sessions}
+        result = dict(result, delegations=[relation for relation in result["delegations"]
+                      if relation["parent_id"] in reachable and relation["child_id"] in reachable])
 
     def label(sid):
         session = sessions.get(sid)
@@ -194,10 +208,11 @@ def render_tree(result):
         missing = " [metadados ausentes]" if not session["metadata_present"] else ""
         return f"{sid} [{observed}]{missing}"
 
-    roots = [sid for sid in sorted(sessions) if sid not in referenced]
+    roots = [root_id] if root_id is not None else [sid for sid in sorted(sessions) if sid not in referenced]
     # A pure cycle has no root. Starting its least ID makes it visible; the
     # visited set below renders its back edge once and cannot recurse forever.
-    roots.extend(sid for sid in sorted(sessions) if sid in referenced)
+    if root_id is None:
+        roots.extend(sid for sid in sorted(sessions) if sid in referenced)
     lines = []
     expanded = set()
     for root in roots:
@@ -223,7 +238,10 @@ def render_tree(result):
                 stack.append((descendants[index], prefix + ("    " if connector == "└── " else "│   "),
                               "└── " if last else "├── "))
     lines.append("")
-    lines.append(f"Resumo: {len(sessions)} sessões, {len(result['delegations'])} delegações")
+    session_count, delegation_count = len(sessions), len(result["delegations"])
+    session_label = "sessão" if session_count == 1 else "sessões"
+    delegation_label = "delegação" if delegation_count == 1 else "delegações"
+    lines.append(f"Resumo: {session_count} {session_label}, {delegation_count} {delegation_label}")
     return "\n".join(lines)
 
 
@@ -232,10 +250,16 @@ def main(argv=None):
     parser.add_argument("history", type=Path, help="JSONL file or directory (recursive)")
     parser.add_argument("--format", choices=("json", "tree"), default="json",
                         help="output format (default: json)")
+    parser.add_argument("--root", dest="root_id", help="show this session and reachable descendants (tree only)")
     args = parser.parse_args(argv)
+    if args.root_id is not None and args.format != "tree":
+        parser.error("--root exige --format tree")
     result = inspect(args.history)
     if args.format == "tree":
-        print(render_tree(result))
+        if args.root_id is not None and args.root_id not in {s["id"] for s in result["sessions"]}:
+            print("Erro: ID de sessão raiz inexistente", file=sys.stderr)
+            return 2
+        print(render_tree(result, args.root_id))
     else:
         print(json.dumps(result, indent=2, ensure_ascii=True))
     diagnostics = result["diagnostics"]

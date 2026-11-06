@@ -235,6 +235,86 @@ class InspectorTests(unittest.TestCase):
         self.assertIn("child [modelo=? esforço=?] [metadados ausentes]", stdout.getvalue())
         self.assertNotIn("PRIVATE-PATH", stdout.getvalue())
 
+    def test_root_filter_excludes_ancestors_siblings_and_summarizes_subgraph(self):
+        self.write("main.jsonl", [meta("main"), call("a"), output("a", agent_id="chosen"),
+                   call("b"), output("b", agent_id="sibling")])
+        self.write("chosen.jsonl", [meta("chosen", {"subagent": {"thread_spawn": {
+                   "parent_thread_id": "main"}}}), call("leaf"), output("leaf", agent_id="missing"),
+                   call("unfinished", message="agent_id=ghost SECRET")])
+        self.write("sibling.jsonl", [meta("sibling", {"subagent": {"thread_spawn": {
+                   "parent_thread_id": "main"}}})])
+        self.write("unrelated.jsonl", [meta("unrelated")])
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = main([str(self.root), "--format", "tree", "--root", "chosen"])
+        self.assertEqual(status, 0)
+        self.assertEqual(stdout.getvalue(), (
+            "chosen [modelo=? esforço=?]\n"
+            "└── missing [modelo=? esforço=?] [metadados ausentes]\n"
+            "\nResumo: 2 sessões, 1 delegação\n"))
+
+    def test_root_filter_handles_cycles_and_multiple_parents(self):
+        self.write("a.jsonl", [meta("a"), call("x"), output("x", agent_id="shared")])
+        self.write("b.jsonl", [meta("b"), call("x"), output("x", agent_id="shared")])
+        self.write("shared.jsonl", [meta("shared", {"subagent": {"thread_spawn": {
+                   "parent_thread_id": "a"}}}), call("back"), output("back", agent_id="a")])
+        rendered = render_tree(inspect(self.root), "b")
+        self.assertIn("b [", rendered)
+        self.assertIn("shared [", rendered)
+        self.assertIn("a [", rendered)  # Reached through the confirmed cycle.
+        self.assertIn("ciclo ou referência repetida", rendered)
+        self.assertIn("Resumo: 3 sessões, 3 delegações", rendered)
+
+    def test_root_filter_shared_descendant_from_two_included_branches(self):
+        self.write("root.jsonl", [meta("root"), call("a-call"), output("a-call", agent_id="a"),
+                   call("b-call"), output("b-call", agent_id="b")])
+        self.write("a.jsonl", [meta("a"), call("shared-call"),
+                   output("shared-call", agent_id="shared")])
+        self.write("b.jsonl", [meta("b"), call("shared-call"),
+                   output("shared-call", agent_id="shared")])
+        rendered = render_tree(inspect(self.root), "root")
+        self.assertIn("shared [", rendered)
+        self.assertIn("ciclo ou referência repetida", rendered)
+        self.assertIn("Resumo: 4 sessões, 4 delegações", rendered)
+
+    def test_root_cli_validation_and_missing_id_are_safe(self):
+        path = self.write("safe.jsonl", [meta("safe"), call(message="SECRET"),
+                                         output(agent_id="child")])
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = main([str(path), "--format", "tree", "--root", "absent SECRET"])
+        self.assertEqual(status, 2)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("ID de sessão raiz inexistente", stderr.getvalue())
+        self.assertNotIn("SECRET", stderr.getvalue())
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            with self.assertRaises(SystemExit) as raised:
+                main([str(path), "--root", "safe"])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertNotIn("SECRET", stderr.getvalue())
+
+    def test_root_cli_can_select_missing_metadata_reference(self):
+        path = self.write("safe.jsonl", [meta("safe"), call(message="SECRET"),
+                                         output(agent_id="child", response="SECRET")])
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            status = main([str(path), "--format", "tree", "--root", "child"])
+        self.assertEqual(status, 0)
+        self.assertEqual(stdout.getvalue(), (
+            "child [modelo=? esforço=?] [metadados ausentes]\n\nResumo: 1 sessão, 0 delegações\n"))
+        self.assertNotIn("SECRET", stdout.getvalue())
+
+    def test_root_filter_handles_long_chain(self):
+        size = 1100
+        sessions = [{"id": str(index), "metadata_present": False,
+                     "observed_settings": []} for index in range(size)]
+        delegations = [{"parent_id": str(index), "child_id": str(index + 1)}
+                       for index in range(size - 1)]
+        rendered = render_tree({"sessions": sessions, "delegations": delegations}, "500")
+        self.assertTrue(rendered.startswith("500 ["))
+        self.assertIn("Resumo: 600 sessões, 599 delegações", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()
