@@ -30,6 +30,25 @@ necessidade prática, benefício demonstrável, escopo e autorização próprios
 O inspetor não é um dashboard nem um gerenciador de agentes. As capacidades
 abaixo permanecem propostas de evolução.
 
+## v0.3 — Missão 009
+
+- `--format tree --root <session-id>` limita a visualização e o resumo à raiz
+  escolhida e seus descendentes confirmados, preservando proteção contra ciclos,
+  indicação de metadados ausentes e comportamento sem filtro. Raiz inexistente
+  produz erro com código 2. Testes usam somente dados sintéticos.
+- Primeiro especialista reutilizável em
+  [`.codex/agents/python-maintainer.toml`](.codex/agents/python-maintainer.toml),
+  com Luna/low e escopo Python delimitado. Descoberta da definição confirmada no
+  CLI 0.166.0 em configuração temporária isolada, sem inferência.
+- Esta sessão não expõe seleção de papel no spawn. Um único filho nativo
+  implementou código/testes com Luna/low solicitados; modelo efetivo não
+  comprovado. Revisão pediu simplificações e reforço dos testes. Delegação nativa
+  útil para separar implementação e pesquisa; ganho específico do especialista
+  ainda pendente de tarefa real numa nova sessão com seleção do papel disponível.
+  Nenhuma configuração global foi alterada.
+- [Catálogo de oito candidatas](SKILLS_CANDIDATES.md) preserva a pesquisa,
+  o inventário e os critérios para adoção seletiva futura; nenhuma instalação.
+
 ## Próximas capacidades prioritárias
 
 - Evoluir a observabilidade somente de leitura a partir das evidências existentes,
