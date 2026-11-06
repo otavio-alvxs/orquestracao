@@ -2,6 +2,29 @@
 
 Projeto para organizar o uso incremental de agentes, modelos, skills e ferramentas, priorizando funcionalidade, velocidade e economia de recursos.
 
+## Central Web local — v0.10 (Missão 017)
+
+Inicie com Python 3.10+ e Codex CLI já autenticado. Cada diretório autorizado
+deve ser informado na inicialização; sem argumentos, somente o diretório atual
+é oferecido. O servidor escuta exclusivamente em `127.0.0.1`:
+
+```sh
+python3 web_operations.py --project /caminho/do/projeto
+# Outros projetos permitidos podem ser acrescentados com outro --project.
+```
+
+Abra o endereço local impresso no terminal. A página inicia uma execução
+efêmera `codex exec` em sandbox `read-only`, apresenta estado, resposta, duração,
+tokens reportados e eventos técnicos recolhíveis, e permite cancelar o processo.
+Prompts e respostas não são persistidos pela aplicação. A TUI continua disponível
+em `orchestration_tui.py`.
+
+O modo somente leitura é aplicado pelo Codex e não cria uma fronteira contra
+instruções maliciosas nos arquivos lidos, hooks ou ferramentas externas. Use
+projetos e tarefas autorizados e uma configuração Codex confiável. Aprovações
+interativas e sessões persistentes pelo `app-server` não fazem parte desta versão.
+O token CSRF e o estado da única tarefa ficam apenas na memória do processo.
+
 ## TUI funcional — v0.7 (Missão 014)
 
 A interface inicia um processo real do Codex no projeto escolhido, acompanha

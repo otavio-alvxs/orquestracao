@@ -4,6 +4,15 @@ Este documento preserva a visão de longo prazo do Orquestração. As possibilid
 futuras não são compromissos de implementação: cada incremento depende de
 necessidade prática, benefício demonstrável, escopo e autorização próprios.
 
+## v0.10 — Missão 017
+
+- Primeira central Web local para uma tarefa real via `codex_runner.py`, com
+  execução efêmera somente leitura, seleção de diretórios permitidos na
+  inicialização, streaming SSE, cancelamento, resultado e métricas reconhecidas.
+- Execução web em `127.0.0.1`, sem persistência própria de prompts/respostas.
+  Aprovações interativas, sessões persistentes pelo `app-server` e execução fora
+  do sandbox read-only permanecem fora do escopo.
+
 ## Funcionalidades já comprovadas
 
 - Roteamento nativo Sol → Luna comprovado e inspeção validada com históricos reais,
