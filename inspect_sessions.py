@@ -43,7 +43,8 @@ def inspect(path):
 
     def session(sid):
         return sessions.setdefault(sid, dict(
-            id=sid, metadata_present=False, roles=[], observed_settings=[]))
+            id=sid, metadata_present=False, roles=[], observed_settings=[],
+            observed_agent_roles=[]))
 
     def role(sid, name):
         roles = session(sid)["roles"]
@@ -127,6 +128,11 @@ def inspect(path):
                             role(current, "main")
                         subagent = obj(obj(source).get("subagent"))
                         spawn = obj(subagent.get("thread_spawn"))
+                        observed_role = token(spawn.get("agent_role"))
+                        if observed_role:
+                            observed_roles = session(current)["observed_agent_roles"]
+                            if observed_role not in observed_roles:
+                                observed_roles.append(observed_role)
                         if isinstance(source, dict) and "subagent" in source:
                             role(current, "subagent")
                         parent = token(spawn.get("parent_thread_id"))
@@ -159,6 +165,7 @@ def inspect(path):
 
     for item in sessions.values():
         item["roles"].sort()
+        item["observed_agent_roles"].sort()
         item["observed_settings"].sort(key=lambda s: (s["model"] or "", s["effort"] or ""))
     for item in edges.values():
         item["evidence"].sort()
@@ -205,8 +212,10 @@ def render_tree(result, root_id=None):
                 for item in settings)
         else:
             observed = "modelo=? esforço=?"
+        agent_roles = session.get("observed_agent_roles", [])
+        role_label = (" papel=" + ",".join(agent_roles)) if agent_roles else ""
         missing = " [metadados ausentes]" if not session["metadata_present"] else ""
-        return f"{sid} [{observed}]{missing}"
+        return f"{sid} [{observed}{role_label}]{missing}"
 
     roots = [root_id] if root_id is not None else [sid for sid in sorted(sessions) if sid not in referenced]
     # A pure cycle has no root. Starting its least ID makes it visible; the

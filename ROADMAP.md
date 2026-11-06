@@ -99,6 +99,35 @@ abaixo permanecem propostas de evolução.
   não repete o piloto nem altera código, agentes, skills, configurações pessoais
   ou outros repositórios. Nenhuma infraestrutura nova, merge, tag ou release.
 
+## v0.6 — Missão 012
+
+- `observed_agent_roles` no JSON identifica papéis personalizados observados em
+  `session_meta.payload.source.subagent.thread_spawn.agent_role`; árvore mostra
+  `papel=...` quando disponível. Preserva `roles`, entradas anteriores, filtros,
+  ciclos e resumo. Allowlist de identificadores existente; ausência ou valor
+  inválido produz lista vazia, sem inferir dos argumentos solicitados ou do
+  histórico herdado. Somente biblioteca padrão e testes sintéticos.
+- Primeiro [`reviewer`](.codex/agents/reviewer.toml) local, independente de linguagem:
+  bugs, regressões, contratos, privacidade e cobertura, com achados por impacto e
+  evidências de arquivo/linha. Não edita durante a revisão, publica ou altera
+  permissões; evita auditorias extensas e preferências de estilo. Terra/medium
+  disponível no catálogo instalado; nenhum ajuste pessoal ou no Developer/Sol.
+- PR #5 confirmada integrada; main sincronizada e branch da v0.6 criada. Developer
+  implementou código/testes com seleção explícita e metadados próprios confirmando
+  `developer`, Luna/low, excluído histórico herdado.
+- **Reviewer personalizado: execução não validada.** Seleção explícita retornou
+  `unknown agent_type 'reviewer'`. CLI 0.166.0 descobriu o arquivo no catálogo em
+  configuração temporária isolada, sem inferência; isso não valida a invocação.
+- Revisão independente realizada pelo fluxo nativo disponível: `default` com
+  Terra/medium confirmados em metadados próprios, sem fork de histórico e sem
+  avaliação pronta do Developer. Nenhum defeito confirmado, nenhuma correção
+  necessária. Coordenador integrou; 21 testes sintéticos e `git diff --check`
+  passaram. Evidências e exemplo sintético no README, sem publicar históricos.
+- Separação útil para segunda análise independente; ganho de qualidade, tempo e
+  custo não medido. Próxima melhoria: validar seleção do papel `reviewer` em nova
+  sessão que o exponha, com tarefa real e autorização própria. Sem infraestrutura
+  adicional nem promoção global nesta missão.
+
 ## Próximas capacidades prioritárias
 
 - Evoluir a observabilidade somente de leitura a partir das evidências existentes,
