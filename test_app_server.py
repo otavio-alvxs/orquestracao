@@ -16,7 +16,7 @@ for line in sys.stdin:
  m=json.loads(line); method=m.get('method'); i=m.get('id')
  if method=='initialize': print(json.dumps({'id':i,'result':{}}),flush=True)
  elif method=='thread/start':
-  assert m['params']['ephemeral'] is True and m['params']['sandbox']=='read-only' and m['params']['approvalPolicy']=='never'
+  assert m['params']['ephemeral'] is True and m['params']['sandbox']=='read-only' and m['params']['approvalPolicy']=='on-request'
   print(json.dumps({'id':'approval-1','method':'item/commandExecution/requestApproval','params':{'threadId':'thr-synthetic'}}),flush=True)
   approval=json.loads(sys.stdin.readline())
   assert approval=={'id':'approval-1','result':{'decision':'decline'}}
@@ -155,6 +155,123 @@ for line in sys.stdin:
         self.assertEqual(AppServerRun._safe_request_response("tool/requestUserInput"), {"answers": {}})
         self.assertIsNone(AppServerRun._safe_request_response("unknown/method"))
         self.assertEqual(build_command(self.root, "codex"), ["codex", "-a", "on-request", "exec", "--json", "--ephemeral", "--sandbox", "read-only", "--cd", str(self.root), "-"])
+
+    async def test_development_mode_uses_restricted_workspace_and_one_shot_approvals(self):
+        script = r'''import json,sys
+def send(obj): print(json.dumps(obj),flush=True)
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method'); i=m.get('id'); p=m.get('params',{})
+ if method=='initialize': send({'id':i,'result':{}})
+ elif method=='thread/start':
+  assert p['sandbox']=='workspace-write' and p['approvalPolicy']=='on-request' and p['approvalsReviewer']=='user'
+  send({'id':i,'result':{'thread':{'id':'dev-thread'}}})
+ elif method=='turn/start':
+  assert p['sandboxPolicy']=={'type':'workspaceWrite','networkAccess':False,'writableRoots':[p['input'][0].get('cwd','')]} or p['sandboxPolicy']['type']=='workspaceWrite'
+  assert p['approvalPolicy']=='on-request' and p['approvalsReviewer']=='user'
+  send({'id':i,'result':{'turn':{'id':'dev-turn'}}})
+  send({'id':'rpc-command','method':'item/commandExecution/requestApproval','params':{'threadId':'dev-thread','turnId':'dev-turn','itemId':'cmd-1','command':['python','-m','unittest'],'cwd':'.','reason':'Run tests'}})
+  send({'id':'rpc-file','method':'item/fileChange/requestApproval','params':{'threadId':'dev-thread','turnId':'dev-turn','itemId':'file-1','reason':'Update fixture'}})
+  decisions=[]
+  for _ in range(2):
+   answer=json.loads(sys.stdin.readline()); decisions.append((answer['id'],answer['result']['decision']))
+  assert sorted(decisions)==[('rpc-command','accept'),('rpc-file','decline')]
+  send({'id':'rpc-stale','method':'item/commandExecution/requestApproval','params':{'threadId':'dev-thread','turnId':'old-turn','itemId':'cmd-old','command':'git push'}})
+  stale=json.loads(sys.stdin.readline()); assert stale=={'id':'rpc-stale','result':{'decision':'decline'}}
+  send({'method':'item/completed','params':{'threadId':'dev-thread','turnId':'dev-turn','item':{'id':'file-1','type':'fileChange','status':'failed','changes':[{'path':'declined.txt'}]}}})
+  send({'method':'item/completed','params':{'threadId':'dev-thread','turnId':'dev-turn','item':{'id':'file-2','type':'fileChange','status':'completed','changes':[{'path':'fixture.txt'}]}}})
+  send({'method':'turn/completed','params':{'threadId':'dev-thread','turn':{'id':'dev-turn','status':'completed'}}})
+'''
+        async def factory(*args, **kwargs):
+            return await asyncio.create_subprocess_exec(sys.executable, "-u", "-c", script, **kwargs)
+        self.run = AppServerRun(str(self.root), "edit fixture", mode="development", process_factory=factory)
+        task = asyncio.create_task(collect(self.run))
+        for _ in range(200):
+            if len(self.run.pending_approvals) == 2:
+                break
+            await asyncio.sleep(.01)
+        approvals = list(self.run.pending_approvals.values())
+        self.assertEqual({a['type'] for a in approvals}, {'command', 'fileChange'})
+        command = next(a for a in approvals if a['type'] == 'command')
+        file_change = next(a for a in approvals if a['type'] == 'fileChange')
+        self.assertTrue(await self.run.decide_approval(command['id'], 'accept'))
+        self.assertTrue(await self.run.decide_approval(file_change['id'], 'decline'))
+        self.assertFalse(await self.run.decide_approval(command['id'], 'accept'))
+        await asyncio.wait_for(task, 3)
+        self.assertEqual(self.run.state.status, 'completed')
+        self.assertEqual(self.run.changed_files, {'fixture.txt'})
+
+    async def test_reading_is_default_and_development_is_explicit(self):
+        self.assertEqual(AppServerRun(str(self.root), 'inspect').mode, 'reading')
+        with self.assertRaises(ValueError):
+            AppServerRun(str(self.root), 'inspect', mode='bypass')
+
+    async def test_cancel_with_pending_approval_declines_and_invalidates_it(self):
+        script = r'''import json,sys
+def send(x): print(json.dumps(x),flush=True)
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method'); i=m.get('id')
+ if method=='initialize': send({'id':i,'result':{}})
+ elif method=='thread/start': send({'id':i,'result':{'thread':{'id':'cancel-thread'}}})
+ elif method=='turn/start':
+  send({'id':i,'result':{'turn':{'id':'cancel-turn'}}})
+  send({'id':'approval-wait','method':'item/commandExecution/requestApproval','params':{'threadId':'cancel-thread','turnId':'cancel-turn','itemId':'cmd-wait','command':'pytest'}})
+ elif method=='turn/interrupt':
+  send({'id':i,'result':{}})
+  send({'method':'turn/completed','params':{'threadId':'cancel-thread','turn':{'id':'cancel-turn','status':'interrupted'}}})
+'''
+        async def factory(*args, **kwargs):
+            return await asyncio.create_subprocess_exec(sys.executable, "-u", "-c", script, **kwargs)
+        self.run = AppServerRun(str(self.root), "wait", mode="development", process_factory=factory)
+        task = asyncio.create_task(collect(self.run))
+        for _ in range(200):
+            if self.run.pending_approvals:
+                break
+            await asyncio.sleep(.01)
+        approval_id = next(iter(self.run.pending_approvals))
+        await self.run.cancel()
+        await asyncio.wait_for(task, 3)
+        self.assertFalse(self.run.pending_approvals)
+        self.assertFalse(await self.run.decide_approval(approval_id, "accept"))
+        self.assertEqual(self.run.state.status, "interrupted")
+
+    async def test_transport_loss_invalidates_pending_approval(self):
+        script = r'''import json,sys
+def send(x): print(json.dumps(x),flush=True)
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method'); i=m.get('id')
+ if method=='initialize': send({'id':i,'result':{}})
+ elif method=='thread/start': send({'id':i,'result':{'thread':{'id':'lost-thread'}}})
+ elif method=='turn/start':
+  send({'id':i,'result':{'turn':{'id':'lost-turn'}}})
+  send({'id':'approval-lost','method':'item/commandExecution/requestApproval','params':{'threadId':'lost-thread','turnId':'lost-turn','itemId':'cmd-lost','command':'make check'}})
+  break
+'''
+        async def factory(*args, **kwargs):
+            return await asyncio.create_subprocess_exec(sys.executable, "-u", "-c", script, **kwargs)
+        self.run = AppServerRun(str(self.root), "wait", mode="development", process_factory=factory)
+        await asyncio.wait_for(collect(self.run), 3)
+        self.assertFalse(self.run.pending_approvals)
+        self.assertEqual(self.run.state.status, "failed")
+
+    async def test_completion_event_invalidates_request_before_event_consumer_catches_up(self):
+        class Pipe:
+            def __init__(self): self.writes = []
+            def is_closing(self): return False
+            def write(self, data): self.writes.append(json.loads(data))
+            async def drain(self): pass
+        class Process:
+            def __init__(self): self.stdin = Pipe()
+        run = AppServerRun(str(self.root), "task", mode="development")
+        run.process = Process()
+        run.thread_id, run.turn_id, run.state.status = "thread", "turn", "running"
+        await run._approval_request("rpc-1", "item/commandExecution/requestApproval", {
+            "threadId": "thread", "turnId": "turn", "itemId": "item", "command": "make test"})
+        self.assertEqual(len(run.pending_approvals), 1)
+        approval_id = next(iter(run.pending_approvals))
+        await run._mark_turn_ended({"threadId": "thread", "turn": {"id": "turn", "status": "completed"}})
+        self.assertFalse(run.pending_approvals)
+        self.assertFalse(await run.decide_approval(approval_id, "accept"))
+        self.assertEqual(run.process.stdin.writes[-1], {"id": "rpc-1", "result": {"decision": "decline"}})
 
     async def test_snapshot_streams_live_app_server_text(self):
         app = OperationsServer([self.root])

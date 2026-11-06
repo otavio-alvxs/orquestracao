@@ -12,13 +12,13 @@
 <body>
   <header class="topbar">
     <a class="brand" href="/" aria-label="Orquestração, início"><span class="brand-mark">o</span><span>orquestração</span></a>
-    <div class="local"><i></i> Ambiente local <span class="divider">/</span> Somente leitura</div>
+    <div class="local"><i></i> Ambiente local <span class="divider">/</span> <span id="effective-mode">Leitura</span></div>
   </header>
   <main class="workspace">
     <section class="intro">
       <p class="eyebrow">CENTRAL DE OPERAÇÕES</p>
       <h1>Um lugar para<br>fazer o trabalho avançar.</h1>
-      <p class="lede">Descreva uma tarefa. O Codex trabalha no projeto selecionado, em modo somente leitura.</p>
+      <p class="lede">Descreva uma tarefa e escolha como o Codex pode trabalhar no projeto.</p>
     </section>
 
     <section class="workbench" aria-label="Nova tarefa">
@@ -27,9 +27,14 @@
         <div class="select-wrap"><span class="folder-icon" aria-hidden="true">↳</span><select id="project" aria-label="Projeto autorizado"></select><span class="chevron">⌄</span></div>
       </div>
       <div class="field task-field">
+        <label for="mode">MODO DE EXECUÇÃO</label>
+        <div class="select-wrap"><select id="mode"><option value="reading">Leitura · sem alterações</option><option value="development">Desenvolvimento · pode alterar arquivos</option></select></div>
+        <p id="mode-help" class="mode-help">Leitura usa sandbox readOnly.</p>
+      </div>
+      <div class="field task-field">
         <div class="label-line"><label for="prompt">SUA TAREFA</label><span id="char-count">0 / 16.000</span></div>
         <textarea id="prompt" maxlength="16000" placeholder="Ex.: Analise a estrutura do projeto e resuma seus principais componentes…" spellcheck="true"></textarea>
-        <div class="form-footer"><span class="hint">A execução não altera arquivos.</span><button id="start" class="primary"><span class="play">▶</span> Iniciar tarefa <kbd>⌘ ↵</kbd></button></div>
+        <div class="form-footer"><span id="mode-hint" class="hint">A execução não altera arquivos.</span><button id="start" class="primary"><span class="play">▶</span> Iniciar tarefa <kbd>⌘ ↵</kbd></button></div>
       </div>
       <div class="field task-field"><label for="engine">EXECUTOR</label><div class="select-wrap"><select id="engine"><option value="app-server">Codex app-server · sessão contínua</option><option value="exec">codex exec · execução isolada</option></select></div></div>
     </section>
@@ -39,6 +44,9 @@
       <div class="progress-track"><span id="progress"></span></div>
       <div class="run-meta"><span id="project-label"></span><span id="elapsed">—</span></div>
       <div id="session-id" class="session-id hidden"></div>
+      <section id="approval-panel" class="approval-panel hidden" aria-live="polite"><div class="approval-heading"><strong>Autorização solicitada</strong></div><div id="approval-list"></div></section>
+      <p id="approval-feedback" class="approval-feedback hidden" aria-live="polite"></p>
+      <div id="changed-files" class="changed-files hidden"></div>
       <ol id="conversation" class="conversation" aria-label="Conversa atual"></ol>
       <div id="composer" class="composer hidden"><textarea id="message" maxlength="16000" placeholder="Enviar uma mensagem nesta sessão…"></textarea><button id="send-message" class="primary">Enviar</button></div>
       <div id="agents" class="agents hidden"><span>Agentes observados</span><ul id="agent-list"></ul></div>

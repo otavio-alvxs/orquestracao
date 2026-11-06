@@ -5,6 +5,7 @@ import asyncio
 import json
 import shutil
 import time
+import uuid
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -15,6 +16,7 @@ from codex_runner import RunState, validate_project
 class AppServerRun:
     cwd: str
     prompt: str
+    mode: str = "reading"
     codex: str | None = None
     process_factory: Callable = asyncio.create_subprocess_exec
     process: asyncio.subprocess.Process | None = None
@@ -28,9 +30,18 @@ class AppServerRun:
     _closed: bool = False
     cancel_requested: bool = False
     _message_parts: dict[str, str] = field(default_factory=dict)
+    pending_approvals: dict[str, dict] = field(default_factory=dict)
+    _approval_by_rpc: dict[object, str] = field(default_factory=dict)
+    _early_requests: list[dict] = field(default_factory=list)
+    _write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    changed_files: set[str] = field(default_factory=set)
+    _item_files: dict[str, list[str]] = field(default_factory=dict)
+    _completed_turn_ids: set[str] = field(default_factory=set)
 
     def __post_init__(self):
         self.cwd = str(validate_project(self.cwd))
+        if self.mode not in ("reading", "development"):
+            raise ValueError("Modo de execução inválido.")
 
     async def _rpc(self, method: str, params: dict | None = None, *, timeout: float = 30):
         self._next_id += 1
@@ -62,12 +73,16 @@ class AppServerRun:
                 method, request_id = message.get("method"), message.get("id")
                 if isinstance(method, str):
                     if type(request_id) in (int, str):
-                        result = self._safe_request_response(method)
-                        response = ({"id": request_id, "result": result} if result is not None else
-                                    {"id": request_id, "error": {"code": -32601, "message": "Method not supported"}})
-                        self.process.stdin.write((json.dumps(response) + "\n").encode())
-                        await self.process.stdin.drain()
+                        if method in ("item/commandExecution/requestApproval", "item/fileChange/requestApproval"):
+                            await self._approval_request(request_id, method, message.get("params", {}))
+                        else:
+                            result = self._safe_request_response(method)
+                            response = ({"id": request_id, "result": result} if result is not None else
+                                        {"id": request_id, "error": {"code": -32601, "message": "Method not supported"}})
+                            await self._write_response(response)
                     else:
+                        if method in ("turn/completed", "turn/failed"):
+                            await self._mark_turn_ended(message.get("params", {}))
                         await self._notifications.put(message)
                 elif type(request_id) is int and request_id in self._responses:
                     future = self._responses[request_id]
@@ -76,6 +91,8 @@ class AppServerRun:
         except Exception:
             await self._notifications.put({"method": "_transport/error"})
         finally:
+            await self.invalidate_approvals()
+            await self._decline_early_requests()
             for future in self._responses.values():
                 if not future.done():
                     future.set_exception(failure)
@@ -93,6 +110,104 @@ class AppServerRun:
             return {"answers": {}}
         return None
 
+    async def _write_response(self, response: dict) -> bool:
+        if not self.process or not self.process.stdin or self.process.stdin.is_closing():
+            return False
+        async with self._write_lock:
+            try:
+                self.process.stdin.write((json.dumps(response) + "\n").encode())
+                await self.process.stdin.drain()
+                return True
+            except (BrokenPipeError, ConnectionError, OSError, RuntimeError):
+                return False
+
+    async def _mark_turn_ended(self, params: dict) -> None:
+        if not isinstance(params, dict):
+            return
+        turn = params.get("turn", {})
+        ended_id = params.get("turnId") or (turn.get("id") if isinstance(turn, dict) else None)
+        if not isinstance(ended_id, str):
+            return
+        self._completed_turn_ids.add(ended_id)
+        for opaque_id, approval in list(self.pending_approvals.items()):
+            if approval.get("turn_id") == ended_id:
+                await self._finish_approval(opaque_id, "decline")
+
+    async def _approval_request(self, rpc_id, method: str, params: dict) -> None:
+        if not isinstance(params, dict):
+            await self._write_response({"id": rpc_id, "result": {"decision": "decline"}})
+            return
+        thread_id, turn_id = params.get("threadId"), params.get("turnId")
+        if self.cancel_requested or self._closed:
+            await self._write_response({"id": rpc_id, "result": {"decision": "decline"}})
+            return
+        if not isinstance(thread_id, str) or not isinstance(turn_id, str):
+            await self._write_response({"id": rpc_id, "result": {"decision": "decline"}})
+            return
+        if thread_id != self.thread_id:
+            await self._write_response({"id": rpc_id, "result": {"decision": "decline"}})
+            return
+        if self.turn_id is None:
+            self._early_requests.append({"id": rpc_id, "method": method, "params": params})
+            return
+        if (turn_id != self.turn_id or turn_id in self._completed_turn_ids or self.cancel_requested or
+                self._closed or self.state.status in ("completed", "failed", "interrupted")):
+            await self._write_response({"id": rpc_id, "result": {"decision": "decline"}})
+            return
+        if rpc_id in self._approval_by_rpc:
+            await self._finish_approval(self._approval_by_rpc[rpc_id], "decline")
+            return
+        opaque_id = uuid.uuid4().hex
+        approval = {"id": opaque_id, "type": "command" if "commandExecution" in method else "fileChange",
+                    "thread_id": thread_id, "turn_id": turn_id, "item_id": params.get("itemId"),
+                    "reason": params.get("reason"), "command": params.get("command"), "cwd": params.get("cwd"),
+                    "files": self._item_files.get(params.get("itemId"), []),
+                    "_rpc_id": rpc_id, "_method": method,
+                    "_network": bool(params.get("networkApprovalContext")),
+                    "_grant_root": bool(params.get("grantRoot")),
+                    "_additional_permissions": params.get("additionalPermissions"),
+                    "_available_decisions": params.get("availableDecisions")}
+        self.pending_approvals[opaque_id] = approval
+        self._approval_by_rpc[rpc_id] = opaque_id
+        await self._notifications.put({"method": "approval/pending", "params": {k: v for k, v in approval.items() if not k.startswith("_")}})
+
+    async def decide_approval(self, opaque_id: str, decision: str) -> bool:
+        approval = self.pending_approvals.get(opaque_id)
+        if decision not in ("accept", "decline") or not approval:
+            return False
+        if (self._closed or self.cancel_requested or approval["turn_id"] in self._completed_turn_ids or
+                self.state.status in ("completed", "failed", "interrupted") or
+                approval["thread_id"] != self.thread_id or approval["turn_id"] != self.turn_id):
+            await self._finish_approval(opaque_id, "decline")
+            return False
+        if decision == "accept":
+            if approval.get("_network") or approval.get("_grant_root") or approval.get("_additional_permissions"):
+                return False
+            available = approval.get("_available_decisions")
+            if isinstance(available, list) and decision not in available:
+                return False
+        elif isinstance(approval.get("_available_decisions"), list) and decision not in approval["_available_decisions"]:
+            return False
+        return await self._finish_approval(opaque_id, decision)
+
+    async def _finish_approval(self, opaque_id: str, decision: str) -> bool:
+        approval = self.pending_approvals.pop(opaque_id, None)
+        if not approval:
+            return False
+        rpc_id = approval["_rpc_id"]
+        self._approval_by_rpc.pop(rpc_id, None)
+        return await self._write_response({"id": rpc_id, "result": {"decision": decision}})
+
+    async def invalidate_approvals(self) -> None:
+        for opaque_id in list(self.pending_approvals):
+            await self._finish_approval(opaque_id, "decline")
+        await self._decline_early_requests()
+
+    async def _decline_early_requests(self) -> None:
+        early, self._early_requests = self._early_requests, []
+        for request in early:
+            await self._write_response({"id": request["id"], "result": {"decision": "decline"}})
+
     async def _start(self):
         executable = self.codex or shutil.which("codex")
         if not executable:
@@ -101,12 +216,14 @@ class AppServerRun:
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
         self._reader = asyncio.create_task(self._read())
-        await self._rpc("initialize", {"clientInfo": {"name": "orquestracao-web", "title": "Orquestração Web", "version": "0.11"}})
+        await self._rpc("initialize", {"clientInfo": {"name": "orquestracao-web", "title": "Orquestração Web", "version": "0.12"}})
         if self.cancel_requested:
             return
         self.process.stdin.write(b'{"method":"initialized","params":{}}\n')
         await self.process.stdin.drain()
-        result = await self._rpc("thread/start", {"cwd": self.cwd, "sandbox": "read-only", "ephemeral": True, "approvalPolicy": "never"})
+        sandbox = "workspace-write" if self.mode == "development" else "read-only"
+        result = await self._rpc("thread/start", {"cwd": self.cwd, "sandbox": sandbox, "ephemeral": True,
+            "approvalPolicy": "on-request", "approvalsReviewer": "user"})
         self.thread_id = result.get("thread", {}).get("id")
         if not self.thread_id:
             raise RuntimeError("Codex não retornou a identificação da sessão.")
@@ -130,9 +247,15 @@ class AppServerRun:
                 yield "Turno Codex interrupted."
                 return
             self.state.turn_completed = False
+            sandbox_policy = ({"type": "workspaceWrite", "networkAccess": False, "writableRoots": [self.cwd]}
+                              if self.mode == "development" else {"type": "readOnly", "networkAccess": False})
             result = await self._rpc("turn/start", {"threadId": self.thread_id, "input": [{"type": "text", "text": self.prompt}],
-                                                   "sandboxPolicy": {"type": "readOnly"}, "approvalPolicy": "never"})
+                "sandboxPolicy": sandbox_policy, "approvalPolicy": "on-request",
+                "approvalsReviewer": "user"})
             self.turn_id = result.get("turn", {}).get("id")
+            early, self._early_requests = self._early_requests, []
+            for request in early:
+                await self._approval_request(request["id"], request["method"], request["params"])
             self.state.status = "running"
             if self.cancel_requested:
                 await self._interrupt_known_turn()
@@ -156,6 +279,12 @@ class AppServerRun:
                         self._refresh_final()
                 elif method == "item/completed":
                     item = params.get("item", {})
+                    if (item.get("type") in ("fileChange", "file_change", "fileChangeItem", "file_change_item") and
+                            item.get("status") == "completed"):
+                        files = self._paths_from_item(item)
+                        self.changed_files.update(files)
+                        if isinstance(item.get("id"), str):
+                            self._item_files[item["id"]] = files
                     if item.get("type") in ("agentMessage", "agent_message") and isinstance(item.get("text"), str):
                         item_id = item.get("id")
                         key = item_id if isinstance(item_id, str) else "__message__"
@@ -164,6 +293,7 @@ class AppServerRun:
                     if item.get("type") in ("collabAgentToolCall", "collab_agent_tool_call"):
                         self._observe_agents(item)
                 elif method == "turn/completed":
+                    await self.invalidate_approvals()
                     self.state.turn_completed = True
                     turn = params.get("turn", {})
                     status = turn.get("status", "completed")
@@ -174,6 +304,7 @@ class AppServerRun:
                     yield "Turno Codex " + self.state.status + "."
                     return
                 elif method == "turn/failed":
+                    await self.invalidate_approvals()
                     self.state.status = "failed"
                     self.state.error = "O turno Codex falhou."
                     self.state.finish_timing()
@@ -181,10 +312,15 @@ class AppServerRun:
                     return
                 elif method in ("item/started", "item/updated", "item/completed"):
                     item = params.get("item", {})
+                    if item.get("type") in ("fileChange", "file_change", "fileChangeItem", "file_change_item"):
+                        files = self._paths_from_item(item)
+                        if isinstance(item.get("id"), str):
+                            self._item_files[item["id"]] = files
                     if item.get("type") in ("collabAgentToolCall", "collab_agent_tool_call"):
                         self._observe_agents(item)
                 yield method if isinstance(method, str) else "Evento Codex recebido."
         except Exception:
+            await self.invalidate_approvals()
             self.state.status = "failed"
             self.state.error = "Não foi possível iniciar ou acompanhar o Codex app-server."
             self.state.finish_timing()
@@ -192,6 +328,7 @@ class AppServerRun:
 
     async def cancel(self):
         self.cancel_requested = True
+        await self.invalidate_approvals()
         if self.process and self.thread_id and self.turn_id:
             await self._interrupt_known_turn()
 
@@ -225,6 +362,7 @@ class AppServerRun:
 
     async def close(self):
         self._closed = True
+        await self.invalidate_approvals()
         if self.process:
             self.process.stdin.close()
             try:
@@ -234,3 +372,14 @@ class AppServerRun:
                 await self.process.wait()
         if self._reader:
             self._reader.cancel()
+
+    def _paths_from_item(self, item: dict) -> list[str]:
+        changes = item.get("changes", [])
+        paths = []
+        if isinstance(changes, list):
+            for change in changes:
+                if isinstance(change, dict):
+                    path = change.get("path") or change.get("filePath") or change.get("file_path")
+                    if isinstance(path, str) and path not in paths:
+                        paths.append(path)
+        return paths

@@ -88,8 +88,51 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
         states = [json.loads(block.split(b"data: ", 1)[1]) for block in data.split(b"\n\n") if b"event: state" in block]
         final = states[-1]
         self.assertEqual(final["status"], "completed")
+        self.assertEqual(final["mode"], "reading")
+        self.assertIn("approvals_reviewer=\"user\"", self.app.session.run.command)
         self.assertEqual((final["input_tokens"], final["output_tokens"], final["cached_input_tokens"]), (21, 8, 2))
         self.assertGreaterEqual(final["duration_seconds"], 0)
+        self.assertEqual((await self.post("/api/run", {
+            "prompt": "alteração", "project": str(self.root), "engine": "exec", "mode": "development",
+        }))[0], 400)
+
+    async def test_development_mode_and_native_approval_http_endpoint(self):
+        script = r'''import json,sys
+def send(x): print(json.dumps(x),flush=True)
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method'); i=m.get('id'); p=m.get('params',{})
+ if method=='initialize': send({'id':i,'result':{}})
+ elif method=='thread/start':
+  assert p['sandbox']=='workspace-write' and p['approvalPolicy']=='on-request' and p['approvalsReviewer']=='user'
+  send({'id':i,'result':{'thread':{'id':'http-thread'}}})
+ elif method=='turn/start':
+  assert p['sandboxPolicy']['type']=='workspaceWrite' and p['sandboxPolicy']['networkAccess'] is False
+  assert p['approvalPolicy']=='on-request' and p['approvalsReviewer']=='user'
+  send({'id':i,'result':{'turn':{'id':'http-turn'}}})
+  send({'id':'rpc-http','method':'item/commandExecution/requestApproval','params':{'threadId':'http-thread','turnId':'http-turn','itemId':'cmd-http','command':'python -m unittest','reason':'Run project tests'}})
+  decision=json.loads(sys.stdin.readline()); assert decision=={'id':'rpc-http','result':{'decision':'accept'}}
+  send({'method':'turn/completed','params':{'threadId':'http-thread','turn':{'id':'http-turn','status':'completed'}}})
+'''
+        await self.app_start(script)
+        status, _, _ = await self.post("/api/run", {
+            "prompt": "Run tests", "project": str(self.root), "engine": "app-server", "mode": "development",
+        })
+        self.assertEqual(status, 202)
+        for _ in range(200):
+            run = self.app.session.run
+            if isinstance(run, AppServerRun) and run.pending_approvals:
+                break
+            await asyncio.sleep(.01)
+        self.assertEqual(run.mode, "development")
+        approval_id = next(iter(run.pending_approvals))
+        self.assertEqual((await self.post("/api/approval", {
+            "request_id": approval_id, "decision": "accept",
+        }))[0], 200)
+        self.assertEqual((await self.post("/api/approval", {
+            "request_id": approval_id, "decision": "accept",
+        }))[0], 409)
+        await asyncio.wait_for(self.app.session.task, 3)
+        self.assertEqual(run.state.status, "completed")
 
     async def test_same_origin_fetch_without_origin_and_no_cross_run_replay(self):
         script = '''import json,sys
@@ -129,7 +172,7 @@ print('{"type":"turn.completed"}', flush=True)
         }, writer)
 
         self.assertTrue(writer.data.startswith(b"HTTP/1.1 400 Bad Request"))
-        self.assertIn(b"Executor invalido", writer.data)
+        self.assertIn("Executor inválido".encode(), writer.data)
         self.assertIs(self.app.session.run, existing)
         existing.close.assert_not_awaited()
 
