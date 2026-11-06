@@ -9,3 +9,7 @@
 - Agentes especializados, skills, scripts, serviços, dashboards e outras infraestruturas exigem escopo próprio.
 - Revise o diff e faça apenas verificações proporcionais à mudança. Encerre quando a entrega estiver funcional, sem auditorias extensas ou documentação excessiva.
 - Não realize push, merge ou publicação sem autorização explícita.
+- Coordenador não implementa por padrão; tarefas simples dispensam delegação.
+- Developer recebe escopo delimitado e resumo curto; Reviewer atua conforme risco, sem repetição.
+- Prefira determinismo antes de inferência; subagentes entregam resumo com evidências, sem logs extensos.
+- Paralelize somente trabalho independente.

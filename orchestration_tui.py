@@ -30,7 +30,7 @@ class OrchestrationApp(App):
     #actions { height: 3; }
     #start { width: 1fr; background: #3569bd; }
     #cancel { width: 16; margin-left: 1; }
-    #status { height: 2; color: #8fb8ff; }
+    #status { height: auto; color: #8fb8ff; }
     #events { height: 1fr; }
     #agent { height: 9; }
     #result { height: 1fr; overflow-y: auto; }
@@ -59,7 +59,7 @@ class OrchestrationApp(App):
                     with Horizontal(id="actions"):
                         yield Button("▶  Iniciar tarefa", id="start", variant="primary")
                         yield Button("Cancelar", id="cancel", disabled=True)
-                    yield Static("Estado: idle", id="status")
+                    yield Static("Estado: idle", id="status", markup=False)
                     yield Label("EVENTOS", classes="section-label")
                     yield RichLog(id="events", auto_scroll=True, highlight=False, markup=False, wrap=True, max_lines=500)
                 with Vertical(id="right", classes="panel"):
@@ -143,7 +143,27 @@ class OrchestrationApp(App):
             result.load_text(text)
 
     def _status(self, status: str) -> None:
-        self.query_one("#status", Static).update(f"Estado: {status}")
+        state = self.current_run.state if self.current_run else None
+        duration = "indisponível"
+        if state:
+            seconds = state.duration_seconds
+            if seconds is None and state.started_at is not None:
+                import time
+                seconds = max(0.0, time.monotonic() - state.started_at)
+            if seconds is not None:
+                duration = f"{seconds:.1f}s"
+        def metric(value: int | None) -> str:
+            return str(value) if value is not None else "indisponível"
+        consumption = "indisponível"
+        result_summary = "Resultado: indisponível"
+        if state:
+            consumption = (f"tokens entrada {metric(state.input_tokens)} · saída {metric(state.output_tokens)} · "
+                           f"cache {metric(state.cached_input_tokens)}")
+            outcome = (state.error or state.final) if state.status == "failed" else (state.final or state.error)
+            if outcome:
+                result_summary = "Resultado: " + " ".join(outcome.split())[:100]
+        self.query_one("#status", Static).update(
+            f"Estado: {status} · duração {duration}\n{consumption}\n{result_summary}")
         self.query_one("#cancel", Button).disabled = status not in {"starting", "running"}
         self.query_one("#start", Button).disabled = status in {"starting", "running"}
         for selector in ("#task", "#project", "#choose"):

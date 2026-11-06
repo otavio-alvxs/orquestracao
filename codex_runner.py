@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import signal
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Callable
@@ -21,6 +22,15 @@ class RunState:
     error: str = ""
     agents: dict[str, dict[str, str]] = field(default_factory=dict)
     turn_completed: bool = False
+    duration_seconds: float | None = None
+    started_at: float | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_input_tokens: int | None = None
+
+    def finish_timing(self) -> None:
+        if self.started_at is not None and self.duration_seconds is None:
+            self.duration_seconds = max(0.0, time.monotonic() - self.started_at)
 
 
 def validate_project(path: str | Path) -> Path:
@@ -64,6 +74,11 @@ def parse_event(line: str, state: RunState) -> str | None:
         return "Execução iniciada pelo Codex." if kind == "thread.started" else "Turno do coordenador iniciado."
     if kind == "turn.completed":
         state.turn_completed = True
+        usage = event.get("usage")
+        if isinstance(usage, dict):
+            for key in ("input_tokens", "output_tokens", "cached_input_tokens"):
+                value = usage.get(key)
+                setattr(state, key, value if type(value) is int and value >= 0 else None)
         _coordinator(state, "completed")
         return "Turno do coordenador concluído."
     if kind in ("turn.failed", "error"):
@@ -107,12 +122,16 @@ class CodexRun:
         self._reading = False
 
     async def events(self) -> AsyncIterator[str]:
+        if self.state.started_at is None:
+            self.state.started_at = time.monotonic()
         if self._cancel_requested:
             self.state.status = "interrupted"
+            self.state.finish_timing()
             return
         if not self.prompt:
             self.state.status = "failed"
             self.state.error = "Escreva uma tarefa antes de iniciar."
+            self.state.finish_timing()
             yield self.state.error
             return
         self.state.status = "starting"
@@ -180,6 +199,7 @@ class CodexRun:
                 await asyncio.gather(self._stderr_task, return_exceptions=True)
             if self._cancel_requested and "coordinator" in self.state.agents:
                 _coordinator(self.state, "interrupted")
+            self.state.finish_timing()
 
     @staticmethod
     async def _drain(stream: asyncio.StreamReader) -> bool:
@@ -207,6 +227,10 @@ class CodexRun:
     async def cancel(self) -> None:
         self._cancel_requested = True
         self.state.status = "interrupted"
+        if self.state.started_at is None:
+            self.state.started_at = time.monotonic()
+        if self.process is None and self._spawn_task is None:
+            self.state.finish_timing()
         if self.process is None and self._spawn_task is not None:
             try:
                 self.process = await asyncio.shield(self._spawn_task)
