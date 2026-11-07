@@ -5,7 +5,10 @@ Projeto para organizar o uso incremental de agentes, modelos, skills e ferrament
 Diagnóstico v0.15: [eficiência de contexto](CONTEXT_EFFICIENCY.md#v015--missão-023-diagnóstico-sobre-a-pr-15),
 sem otimização funcional ou economia comprovada nesta investigação.
 
-## Central Web local — v0.14 (Missão 022)
+## Central Web local — v0.16 (Missão 024)
+
+A central também oferece publicação controlada de Draft PRs após tarefas de
+Desenvolvimento, com autorização explícita e validações antes da publicação.
 
 Inicie com Python 3.10+ e Codex CLI já autenticado. Cada diretório autorizado
 deve ser informado na inicialização; sem argumentos, somente o diretório atual
