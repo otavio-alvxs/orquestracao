@@ -15,6 +15,13 @@
     <div class="local"><i></i> Ambiente local <span class="divider">/</span> <span id="effective-mode">Leitura</span></div>
   </header>
   <main class="workspace">
+    <section class="dashboard" aria-label="Visão geral">
+      <section class="quota-panel" aria-label="Cotas do Codex">
+        <div class="section-heading"><div><p class="eyebrow">USO</p><h2>Cotas</h2></div><span id="quota-updated" class="subtle">Aguardando dados</span></div>
+        <div id="quota-cards" class="quota-cards"><p class="empty-state">Cotas indisponíveis</p></div>
+      </section>
+      <section class="team-panel" aria-label="Agentes da tarefa"><div class="section-heading"><div><p class="eyebrow">SESSÃO</p><h2>Agentes</h2></div><span id="agent-count" class="subtle">0 ativos</span></div><ul id="agent-list" class="agent-list"></ul></section>
+    </section>
     <section class="intro">
       <p class="eyebrow">CENTRAL DE OPERAÇÕES</p>
       <h1>Um lugar para<br>fazer o trabalho avançar.</h1>
@@ -55,7 +62,6 @@
       <div id="composer" class="composer hidden"><textarea id="message" maxlength="16000" placeholder="Enviar uma mensagem nesta sessão…"></textarea><button id="send-message" class="primary">Enviar</button></div>
       <div id="escalation" class="composer hidden"><textarea id="escalation-reason" maxlength="1000" placeholder="Motivo para elevar o modelo neste próximo turno"></textarea><button id="escalate" class="primary">Escalonar próximo turno</button></div>
       <p id="route-info" class="hint"></p>
-      <section id="agents" class="agents hidden" aria-live="polite"><strong>Agentes</strong><ul id="agent-list"></ul></section>
       <div id="result-panel" class="result-panel hidden"><div class="result-title"><span>RESULTADO</span><span id="tokens"></span></div><pre id="result"></pre></div>
       <div id="error" class="error hidden"></div>
       <div class="run-actions"><button id="cancel" class="cancel">Cancelar execução</button><button id="new-task" class="new-task hidden">Nova tarefa <span>↗</span></button></div>

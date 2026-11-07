@@ -5,10 +5,33 @@ Projeto para organizar o uso incremental de agentes, modelos, skills e ferrament
 Diagnóstico v0.15: [eficiência de contexto](CONTEXT_EFFICIENCY.md#v015--missão-023-diagnóstico-sobre-a-pr-15),
 sem otimização funcional ou economia comprovada nesta investigação.
 
-## Central Web local — v0.16 (Missão 024)
+## Central Web local — v0.17 (Missão 026)
 
 A central também oferece publicação controlada de Draft PRs após tarefas de
 Desenvolvimento, com autorização explícita e validações antes da publicação.
+
+A página reúne cotas da conta, execução, conversa, resultados e aprovações,
+com painel de agentes em destaque e eventos técnicos recolhidos. O layout
+responsivo preserva o tema escuro e verde-lima, sem dependências de interface.
+O painel usa os eventos estruturados existentes do app-server por SSE: exibe
+somente estados confirmados, separa modelo/esforço solicitado do observado e
+mostra relações pai → filho apenas quando comprovadas. Sem delegação observada,
+a execução mostra somente o coordenador. Metadados ausentes são indisponíveis;
+a conclusão de uma chamada de ferramenta não comprova a conclusão de um agente.
+
+As cotas são consultadas por um monitor app-server independente, somente de
+leitura, mesmo sem tarefa ativa: `account/rateLimits/read` e notificações
+`account/rateLimits/updated`, com consulta a cada 60 segundos e reconexão moderada.
+O protocolo foi conferido no schema gerado pelo Codex CLI 0.167.0.
+`account/usage/read` também está presente, mas não é necessário para este painel
+e não é consultado. Não cria threads nem turnos de inferência e não lê
+`auth.json`. O cache em memória preserva buckets em notificações parciais;
+buckets diferentes não são somados. As janelas de 5 horas e semanal são
+identificadas pelas durações de 300 e 10080 minutos, com percentual utilizado,
+restante, reset e atualização. Ausência de janela, falha de conexão ou cache
+antigo aparecem explicitamente. Tokens de entrada, cache, saída e duração do
+turno continuam separados das cotas da conta. O frontend recebe apenas campos
+selecionados, sem RPC genérico ou respostas brutas da conta.
 
 Inicie com Python 3.10+ e Codex CLI já autenticado. Cada diretório autorizado
 deve ser informado na inicialização; sem argumentos, somente o diretório atual

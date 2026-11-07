@@ -549,8 +549,14 @@ class AppServerRun:
             for agent_id in receiver_ids:
                 if isinstance(agent_id, str):
                     confirmed = self.state.agents.setdefault(agent_id, {"status": "unknown", "activity": "Delegação observada"})
-                    if isinstance(sender_thread, str) and sender_thread == self.thread_id:
+                    if (isinstance(sender_thread, str) and sender_thread == self.thread_id
+                            and item.get("tool") == "spawnAgent"):
                         self._agent_parent[agent_id] = sender_thread
+                        confirmed["parent"] = "coordinator"
+                        if isinstance(item.get("model"), str):
+                            confirmed["requested_model"] = item["model"]
+                        if isinstance(item.get("reasoningEffort"), str):
+                            confirmed["requested_effort"] = item["reasoningEffort"]
 
     async def close(self):
         self._closed = True
