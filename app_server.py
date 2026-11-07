@@ -37,6 +37,12 @@ class AppServerRun:
     changed_files: set[str] = field(default_factory=set)
     _item_files: dict[str, list[str]] = field(default_factory=dict)
     _completed_turn_ids: set[str] = field(default_factory=set)
+    _agent_terminal: set[str] = field(default_factory=set)
+    _sub_activity_items: dict[str, str] = field(default_factory=dict)
+    _agent_parent: dict[str, str] = field(default_factory=dict)
+    _agent_activity_time: dict[str, int] = field(default_factory=dict)
+    _agent_terminal_time: dict[str, int | None] = field(default_factory=dict)
+    _collab_call_ids: set[str] = field(default_factory=set)
 
     def __post_init__(self):
         self.cwd = str(validate_project(self.cwd))
@@ -237,6 +243,13 @@ class AppServerRun:
         self.state.duration_seconds = None
         self.state.status = "starting"
         self.turn_id = None
+        self.state.agents.clear()
+        self._agent_terminal.clear()
+        self._sub_activity_items.clear()
+        self._agent_parent.clear()
+        self._agent_activity_time.clear()
+        self._agent_terminal_time.clear()
+        self._collab_call_ids.clear()
         self._message_parts.clear()
         self.state.final = ""
         yield "Conectando ao Codex app-server."
@@ -272,6 +285,15 @@ class AppServerRun:
                     continue
                 if event_turn and self.turn_id and event_turn != self.turn_id:
                     continue
+                event_item = params.get("item")
+                if not self._collaboration_event_matches(event_item, event_thread, event_turn,
+                                                         self.thread_id, self.turn_id):
+                    continue
+                if isinstance(event_item, dict) and event_item.get("type") == "subAgentActivity":
+                    agent_id = event_item.get("agentThreadId")
+                    if isinstance(agent_id, str) and event_thread == self.thread_id:
+                        self._agent_parent[agent_id] = self.thread_id
+                        self.state.agents.setdefault(agent_id, {})["parent"] = "coordinator"
                 if method == "item/agentMessage/delta":
                     delta = params.get("delta")
                     if isinstance(delta, str):
@@ -293,6 +315,8 @@ class AppServerRun:
                         self._message_parts[key] = item["text"]
                         self._refresh_final()
                     if item.get("type") in ("collabAgentToolCall", "collab_agent_tool_call"):
+                        self._observe_agents(item)
+                    elif item.get("type") == "subAgentActivity":
                         self._observe_agents(item)
                 elif method == "turn/completed":
                     await self.invalidate_approvals()
@@ -320,6 +344,8 @@ class AppServerRun:
                             self._item_files[item["id"]] = files
                     if item.get("type") in ("collabAgentToolCall", "collab_agent_tool_call"):
                         self._observe_agents(item)
+                    elif item.get("type") == "subAgentActivity":
+                        self._observe_agents(item)
                 yield method if isinstance(method, str) else "Evento Codex recebido."
         except Exception:
             await self.invalidate_approvals()
@@ -345,22 +371,113 @@ class AppServerRun:
     def _refresh_final(self):
         self.state.final = "\n\n".join(text for text in self._message_parts.values() if text)
 
+    @staticmethod
+    def _collaboration_event_matches(item: dict, thread_id, turn_id, expected_thread, expected_turn) -> bool:
+        if not isinstance(item, dict) or item.get("type") not in (
+                "collabAgentToolCall", "collab_agent_tool_call", "subAgentActivity"):
+            return True
+        return (isinstance(thread_id, str) and thread_id == expected_thread and
+                isinstance(turn_id, str) and turn_id == expected_turn)
+
     def _observe_agents(self, item: dict):
+        """Normalize only collaboration fields present in app-server items."""
+        if not isinstance(item, dict):
+            return
+        if item.get("type") == "subAgentActivity":
+            agent_id = item.get("agentThreadId")
+            kind = item.get("kind")
+            if not isinstance(agent_id, str) or kind not in ("started", "interacted", "interrupted", "completed"):
+                return
+            item_id = item.get("id")
+            fingerprint = json.dumps(item, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+            if isinstance(item_id, str) and self._sub_activity_items.get(item_id) == fingerprint:
+                return
+            if isinstance(item_id, str):
+                self._sub_activity_items[item_id] = fingerprint
+                if len(self._sub_activity_items) > 512:
+                    self._sub_activity_items.pop(next(iter(self._sub_activity_items)))
+            status = {"started": "running", "interacted": "running", "completed": "completed",
+                      "interrupted": "interrupted"}[kind]
+            agent = self.state.agents.setdefault(agent_id, {})
+            timestamp = item.get("startedAtMs")
+            timestamp = timestamp if type(timestamp) is int and timestamp >= 0 else None
+            is_stale = timestamp is not None and timestamp < self._agent_activity_time.get(agent_id, -1)
+            if isinstance(item.get("model"), str) and (not is_stale or "model" not in agent):
+                agent["model"] = item["model"]
+            if isinstance(item.get("reasoningEffort"), str) and (not is_stale or "effort" not in agent):
+                agent["effort"] = item["reasoningEffort"]
+            if isinstance(item.get("agentPath"), str):
+                agent["name"] = item["agentPath"].rstrip("/").rsplit("/", 1)[-1][:80]
+            terminal_time = self._agent_terminal_time.get(agent_id)
+            newer_than_terminal = (timestamp is not None and terminal_time is not None and
+                                   timestamp > terminal_time and (status != "running" or kind == "started"))
+            if agent_id not in self._agent_terminal:
+                accepted = not is_stale
+            elif status == agent.get("status"):
+                accepted = not is_stale
+            else:
+                # Terminal transitions and restarts need an observed, strictly newer clock.
+                accepted = newer_than_terminal and not is_stale
+            if accepted:
+                agent["status"] = status
+                agent["activity"] = {"started": "Iniciou atividade", "interacted": "Atualizou atividade",
+                                      "completed": "Atividade concluída", "interrupted": "Atividade interrompida"}[kind]
+                if status == "running":
+                    self._agent_terminal.discard(agent_id)
+                    agent.pop("result", None)
+            if accepted and status in ("completed", "interrupted"):
+                self._agent_terminal.add(agent_id)
+                self._agent_terminal_time[agent_id] = timestamp
+            if timestamp is not None and not is_stale:
+                self._agent_activity_time[agent_id] = timestamp
+            return
+        sender_thread = item.get("senderThreadId")
+        if isinstance(sender_thread, str) and self.thread_id and sender_thread != self.thread_id:
+            return
         states = item.get("agentsStates")
+        receiver_ids = item.get("receiverThreadIds")
+        activating_ids = set()
+        call_id = item.get("id")
+        call_time = item.get("startedAtMs")
+        call_time = call_time if type(call_time) is int and call_time >= 0 else None
+        if (isinstance(receiver_ids, list) and item.get("tool") in ("resumeAgent", "followupTask") and
+                isinstance(call_id, str) and call_id not in self._collab_call_ids):
+            self._collab_call_ids.add(call_id)
+            if len(self._collab_call_ids) > 512:
+                self._collab_call_ids.pop()
+            if call_time is not None:
+                for agent_id in receiver_ids:
+                    terminal_time = self._agent_terminal_time.get(agent_id) if isinstance(agent_id, str) else None
+                    if terminal_time is not None and call_time > terminal_time:
+                        activating_ids.add(agent_id)
+                        self._agent_terminal.discard(agent_id)
+                        self.state.agents.get(agent_id, {}).pop("result", None)
+                        self._agent_activity_time[agent_id] = max(call_time, self._agent_activity_time.get(agent_id, -1))
         if isinstance(states, dict):
             for agent_id, agent in states.items():
                 if isinstance(agent_id, str) and isinstance(agent, dict):
-                    confirmed = {"status": agent.get("status")}
-                    if isinstance(agent.get("model"), str): confirmed["model"] = agent["model"]
-                    if isinstance(agent.get("reasoningEffort"), str): confirmed["effort"] = agent["reasoningEffort"]
-                    self.state.agents[agent_id] = confirmed
-        receiver_ids = item.get("receiverThreadIds")
+                    confirmed = self.state.agents.setdefault(agent_id, {})
+                    status = agent.get("status")
+                    status = {"errored": "failed", "pendingInit": "unknown",
+                              "notFound": "unknown"}.get(status, status)
+                    accepted = True
+                    if status in ("running", "completed", "failed", "interrupted", "shutdown", "unknown"):
+                        accepted = agent_id not in self._agent_terminal or agent_id in activating_ids or status == confirmed.get("status")
+                        if accepted:
+                            confirmed["status"] = status
+                            if status in ("completed", "failed", "interrupted"):
+                                self._agent_terminal.add(agent_id)
+                                self._agent_terminal_time[agent_id] = None
+                    if accepted and isinstance(agent.get("message"), str):
+                        confirmed["activity"] = agent["message"][:180]
+                        if confirmed.get("status") in ("completed", "failed", "interrupted"):
+                            confirmed["result"] = agent["message"][:180]
         if isinstance(receiver_ids, list):
             for agent_id in receiver_ids:
                 if isinstance(agent_id, str):
-                    confirmed = self.state.agents.setdefault(agent_id, {"status": "unknown"})
-                    if isinstance(item.get("model"), str): confirmed["model"] = item["model"]
-                    if isinstance(item.get("reasoningEffort"), str): confirmed["effort"] = item["reasoningEffort"]
+                    confirmed = self.state.agents.setdefault(agent_id, {"status": "unknown", "activity": "Delegação observada"})
+                    if isinstance(sender_thread, str) and sender_thread == self.thread_id:
+                        self._agent_parent[agent_id] = sender_thread
 
     async def close(self):
         self._closed = True

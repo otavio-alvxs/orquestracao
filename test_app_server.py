@@ -31,7 +31,7 @@ for line in sys.stdin:
   print(json.dumps({'method':'item/completed','params':{'threadId':'thr-synthetic','turnId':tid,'item':{'id':'msg-commentary','type':'agentMessage','text':'commentary'}}}),flush=True)
   print(json.dumps({'method':'item/agentMessage/delta','params':{'threadId':'thr-synthetic','turnId':tid,'itemId':'msg-final','delta':text}}),flush=True)
   print(json.dumps({'method':'item/completed','params':{'threadId':'thr-synthetic','turnId':tid,'item':{'id':'msg-final','type':'agentMessage','text':text}}}),flush=True)
-  print(json.dumps({'method':'item/completed','params':{'threadId':'thr-synthetic','turnId':tid,'item':{'type':'collabAgentToolCall','receiverThreadIds':['agent-real'],'agentsStates':{'agent-real':{'status':'completed'}},'model':'model-real','reasoningEffort':'high'}}}),flush=True)
+  if turns == 1: print(json.dumps({'method':'item/completed','params':{'threadId':'thr-synthetic','turnId':tid,'item':{'type':'collabAgentToolCall','senderThreadId':'thr-synthetic','id':'call-1','tool':'spawnAgent','receiverThreadIds':['agent-real'],'agentsStates':{'agent-real':{'status':'completed'}},'model':'model-real','reasoningEffort':'high'}}}),flush=True)
   print(json.dumps({'method':'turn/completed','params':{'threadId':'thr-synthetic','turn':{'id':tid,'status':'completed'}}}),flush=True)
  elif method=='turn/interrupt':
   print(json.dumps({'id':i,'result':{}}),flush=True)
@@ -60,12 +60,14 @@ class AppServerTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(asyncio.gather(*(collect(run) for _ in [0])), 3)
         self.assertEqual(run.thread_id, "thr-synthetic")
         self.assertEqual(run.state.final, "commentary\n\nanswer-1")
-        self.assertEqual(run.state.agents["agent-real"], {"status": "completed", "model": "model-real", "effort": "high"})
+        # The collab call reports requested model/effort; these are not execution telemetry.
+        self.assertEqual(run.state.agents["agent-real"], {"status": "completed"})
         first_started = run.state.started_at
         run.prompt = "second"
         await asyncio.wait_for(collect(run), 3)
         self.assertEqual(run.thread_id, "thr-synthetic")
         self.assertEqual(run.state.final, "commentary\n\nanswer-2")
+        self.assertEqual(run.state.agents, {})
         self.assertGreater(run.state.started_at, first_started)
 
     async def test_unknown_failure_and_transport_close_are_safe(self):
@@ -74,6 +76,81 @@ class AppServerTests(unittest.IsolatedAsyncioTestCase):
         events = await asyncio.wait_for(collect(run), 3)
         self.assertEqual(events.count("item/agentMessage/delta"), 2)
         self.assertEqual(run.state.status, "completed")
+
+    async def test_collaboration_activity_uses_resolved_metadata_and_terminal_state(self):
+        run = await self.make_run("first")
+        run.thread_id, run.turn_id = "local-thread", "local-turn"
+        run._observe_agents({"type": "collabAgentToolCall", "id": "call-1", "tool": "spawnAgent",
+                             "senderThreadId": "local-thread", "receiverThreadIds": ["agent-thread"],
+                             "status": "completed", "model": "requested-model", "reasoningEffort": "high",
+                             "agentsStates": {}})
+        self.assertEqual(run.state.agents["agent-thread"], {
+            "status": "unknown", "activity": "Delegação observada"})
+        run._observe_agents({"type": "subAgentActivity", "id": "activity-1", "agentThreadId": "agent-thread",
+                             "kind": "started", "model": "resolved-model", "reasoningEffort": "medium",
+                             "agentPath": "/root/developer"})
+        run._observe_agents({"type": "subAgentActivity", "id": "activity-2", "agentThreadId": "agent-thread",
+                             "kind": "completed", "startedAtMs": 300})
+        run._observe_agents({"type": "subAgentActivity", "id": "activity-1", "agentThreadId": "agent-thread",
+                             "kind": "started", "startedAtMs": 200})
+        self.assertEqual(run.state.agents["agent-thread"], {
+            "status": "completed", "activity": "Atividade concluída",
+            "model": "resolved-model", "effort": "medium", "name": "developer"})
+        run._observe_agents({"type": "subAgentActivity", "id": "late-start", "agentThreadId": "late-agent",
+                             "kind": "started", "startedAtMs": 20})
+        run._observe_agents({"type": "subAgentActivity", "id": "late-complete", "agentThreadId": "late-agent",
+                             "kind": "completed", "startedAtMs": 10})
+        self.assertEqual(run.state.agents["late-agent"]["status"], "running")
+        self.assertNotIn("late-agent", run._agent_terminal)
+        run._observe_agents({"type": "subAgentActivity", "id": "no-clock-complete", "agentThreadId": "no-clock-agent",
+                             "kind": "completed"})
+        run._observe_agents({"type": "subAgentActivity", "id": "no-clock-start", "agentThreadId": "no-clock-agent",
+                             "kind": "started", "startedAtMs": 50})
+        self.assertEqual(run.state.agents["no-clock-agent"]["status"], "completed")
+        run._observe_agents({"type": "subAgentActivity", "id": "no-clock-interrupt", "agentThreadId": "no-clock-agent",
+                             "kind": "interrupted"})
+        self.assertEqual(run.state.agents["no-clock-agent"]["status"], "completed")
+        run._observe_agents({"type": "subAgentActivity", "id": "late-terminal", "agentThreadId": "agent-thread",
+                             "kind": "interrupted", "startedAtMs": 250})
+        self.assertEqual(run.state.agents["agent-thread"]["status"], "completed")
+        run._observe_agents({"type": "subAgentActivity", "id": "fresh-terminal", "agentThreadId": "agent-thread",
+                             "kind": "interrupted", "startedAtMs": 325})
+        self.assertEqual(run.state.agents["agent-thread"]["status"], "interrupted")
+        run._observe_agents({"type": "subAgentActivity", "id": "late-start", "agentThreadId": "late-agent",
+                             "kind": "started", "startedAtMs": 20})
+        run._observe_agents({"type": "subAgentActivity", "id": "late-complete", "agentThreadId": "late-agent",
+                             "kind": "completed", "startedAtMs": 10})
+        self.assertEqual(run.state.agents["late-agent"]["status"], "running")
+        self.assertNotIn("late-agent", run._agent_terminal)
+        run._observe_agents({"type": "collabAgentToolCall", "id": "resume-1", "tool": "resumeAgent", "startedAtMs": 350,
+                             "senderThreadId": "local-thread", "receiverThreadIds": ["agent-thread"],
+                             "agentsStates": {"agent-thread": {"status": "running"}}})
+        run._observe_agents({"type": "subAgentActivity", "id": "activity-3", "agentThreadId": "agent-thread",
+                             "kind": "started", "startedAtMs": 400})
+        self.assertEqual(run.state.agents["agent-thread"]["status"], "running")
+        self.assertNotIn("result", run.state.agents["agent-thread"])
+        run._observe_agents({"type": "subAgentActivity", "id": "failed", "agentThreadId": "failed-agent", "kind": "started"})
+        run._observe_agents({"type": "subAgentActivity", "id": "failed-done", "agentThreadId": "failed-agent", "kind": "interrupted"})
+        self.assertEqual(run.state.agents["failed-agent"]["status"], "interrupted")
+        run._observe_agents({"type": "collabAgentToolCall", "id": "failed-state", "tool": "wait",
+                             "senderThreadId": "local-thread", "receiverThreadIds": ["errored-agent"],
+                             "agentsStates": {"errored-agent": {"status": "errored", "message": "Falha resumida"}}})
+        self.assertEqual(run.state.agents["errored-agent"]["status"], "failed")
+        self.assertEqual(run.state.agents["errored-agent"]["result"], "Falha resumida")
+        run._observe_agents({"type": "collabAgentToolCall", "id": "shutdown-state", "tool": "wait",
+                             "senderThreadId": "local-thread", "receiverThreadIds": ["shutdown-agent"],
+                             "agentsStates": {"shutdown-agent": {"status": "shutdown"}}})
+        self.assertEqual(run.state.agents["shutdown-agent"]["status"], "shutdown")
+        run._observe_agents({"type": "collabAgentToolCall", "id": "other-parent", "tool": "spawnAgent",
+                             "senderThreadId": "other-thread", "receiverThreadIds": ["foreign-agent"], "agentsStates": {}})
+        self.assertNotIn("foreign-agent", run.state.agents)
+        run.state.agents.clear()
+        run._agent_terminal.clear()
+        item = {"type": "subAgentActivity"}
+        self.assertTrue(AppServerRun._collaboration_event_matches(item, "local-thread", "local-turn", "local-thread", "local-turn"))
+        self.assertFalse(AppServerRun._collaboration_event_matches(item, "foreign-thread", "local-turn", "local-thread", "local-turn"))
+        self.assertFalse(AppServerRun._collaboration_event_matches(item, "local-thread", None, "local-thread", "local-turn"))
+        self.assertTrue(AppServerRun._collaboration_event_matches({"type": "agentMessage"}, None, None, "local-thread", "local-turn"))
 
     async def test_interrupt_is_sent_to_active_turn(self):
         script = r'''import json,sys
