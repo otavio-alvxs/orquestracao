@@ -23,6 +23,7 @@ from typing import Callable
 
 from codex_runner import CodexRun, validate_project
 from app_server import AppServerRun
+from rate_limits import RateLimitMonitor
 from task_routing import select_route, escalate_route
 
 HOST = "127.0.0.1"
@@ -331,7 +332,8 @@ class OperationsServer:
                  process_factory: Callable | None = None, remote_origin: str | None = None,
                  remote_logins: set[str] | None = None,
                  publish_runner: Callable | None = None,
-                 publish_dispatch: Callable | None = None):
+                 publish_dispatch: Callable | None = None,
+                 rate_limit_monitor: RateLimitMonitor | None = None):
         self.projects = tuple(dict.fromkeys(validate_project(p) for p in projects))
         if not self.projects:
             raise ValueError("Informe ao menos um diretório autorizado com --project.")
@@ -339,6 +341,8 @@ class OperationsServer:
         self.process_factory = process_factory
         self.publish_runner = publish_runner or _publish_draft_pr
         self.publish_dispatch = publish_dispatch or asyncio.to_thread
+        self.rate_limit_monitor = rate_limit_monitor or RateLimitMonitor(codex=codex, process_factory=process_factory)
+        self.rate_limit_monitor.on_update = self._rate_limits_updated
         if (remote_origin is None) != (remote_logins is None):
             raise ValueError("Configure juntos --remote-origin e --remote-logins-file.")
         if remote_origin is not None and not TAILSCALE_ORIGIN.fullmatch(remote_origin):
@@ -351,12 +355,18 @@ class OperationsServer:
         self.session = Session()
         self.session.engine = "exec"
         self.server: asyncio.AbstractServer | None = None
+        self._clients = set()
 
     async def start(self, port: int = 8765) -> int:
         self.server = await asyncio.start_server(self._client, HOST, port, limit=MAX_BODY + 8192)
+        await self.rate_limit_monitor.start(str(self.projects[0]))
         return self.server.sockets[0].getsockname()[1]
 
+    def _rate_limits_updated(self, snapshot: dict) -> None:
+        asyncio.create_task(self.session.emit("rate_limits", snapshot))
+
     async def close(self) -> None:
+        await self.rate_limit_monitor.close()
         if self.session.publish_task and not self.session.publish_task.done():
             await asyncio.gather(self.session.publish_task, return_exceptions=True)
         if self.session.run and self.session.run.state.status not in TERMINAL:
@@ -371,9 +381,12 @@ class OperationsServer:
                 await asyncio.gather(self.session.task, return_exceptions=True)
         if self.server:
             self.server.close()
+            for client in tuple(self._clients):
+                client.close()
             await self.server.wait_closed()
 
     async def _client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self._clients.add(writer)
         try:
             request = await asyncio.wait_for(reader.readline(), 5)
             parts = request.decode("ascii", "replace").strip().split()
@@ -500,6 +513,7 @@ class OperationsServer:
             if not writer.is_closing():
                 await self._response(writer, 400, b"Bad request")
         finally:
+            self._clients.discard(writer)
             if not writer.is_closing():
                 writer.close()
                 try:
@@ -711,9 +725,10 @@ class OperationsServer:
         await self._response(writer, 202, b'{"ok":true}', "application/json")
 
     def _snapshot(self) -> dict:
+        rate_limits = self.rate_limit_monitor.snapshot
         run = self.session.run
         if not run:
-            return {"status": "idle"}
+            return {"status": "idle", "rate_limits": rate_limits}
         state = run.state
         elapsed = state.duration_seconds
         if elapsed is None and state.started_at is not None:
@@ -742,7 +757,7 @@ class OperationsServer:
                 "changed_files": sorted(getattr(run, "changed_files", set())),
                 "publish_authorized": self.session.publish_authorized,
                 "publish_attempted": self.session.publish_attempted,
-                "publish_result": self.session.publish_result}
+                "publish_result": self.session.publish_result, "rate_limits": rate_limits}
 
     async def _stream(self, writer: asyncio.StreamWriter, last_id: int) -> None:
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nX-Content-Type-Options: nosniff\r\n\r\n")
@@ -756,13 +771,10 @@ class OperationsServer:
                     cursor = event_id
                 if batch:
                     await writer.drain()
-                if self.session.run and self.session.run.state.status in TERMINAL and cursor >= self.session.next_event:
-                    return
                 async with self.session.changed:
                     try:
                         await asyncio.wait_for(self.session.changed.wait_for(
-                            lambda: self.session.next_event > cursor or
-                            bool(self.session.run and self.session.run.state.status in TERMINAL)), 15)
+                            lambda: self.session.next_event > cursor), 15)
                     except asyncio.TimeoutError:
                         writer.write(b": keepalive\n\n")
                         await writer.drain()

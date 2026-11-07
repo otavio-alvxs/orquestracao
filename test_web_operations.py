@@ -36,7 +36,15 @@ async def http(port, method, path, headers=None, body=b""):
         key, value = line.decode().split(":", 1)
         response_headers[key.lower()] = value.strip()
     if response_headers.get("connection") == "keep-alive":
-        data = await asyncio.wait_for(reader.read(), 5)
+        chunks = []
+        while True:
+            frame = await asyncio.wait_for(reader.readuntil(b"\n\n"), 5)
+            chunks.append(frame)
+            if (b"event: state\n" in frame and
+                    json.loads(frame.split(b"data: ", 1)[1])["status"] in
+                    ("completed", "failed", "interrupted")):
+                break
+        data = b"".join(chunks)
     else:
         data = await reader.readexactly(int(response_headers.get("content-length", "0")))
     writer.close()
@@ -48,10 +56,21 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
+        class FakeRateLimitMonitor:
+            def __init__(inner, **kwargs):
+                inner.snapshot = {"status": "disconnected", "updated_at": None, "buckets": {}, "stale": True}
+                inner.on_update = None
+            async def start(inner, cwd):
+                pass
+            async def close(inner):
+                pass
+        self.monitor_patch = patch("web_operations.RateLimitMonitor", FakeRateLimitMonitor)
+        self.monitor_patch.start()
 
     async def asyncTearDown(self):
         if hasattr(self, "app"):
             await self.app.close()
+        self.monitor_patch.stop()
         self.temp.cleanup()
 
     def test_publisher_real_git_snapshot_offline(self):
@@ -882,6 +901,18 @@ print('{"type":"turn.completed"}', flush=True)
         writer = Writer()
         await asyncio.wait_for(app._stream(writer, 0), .2)
         self.assertIn(b"chegou durante drain", writer.data)
+
+    async def test_sse_stays_open_after_terminal_state_until_client_closes(self):
+        app = OperationsServer([self.root])
+        self.app = app
+        app.session.run = SimpleNamespace(state=SimpleNamespace(status="completed"))
+        await app.session.emit("state", {"status": "completed"})
+        writer = SimpleNamespace(data=bytearray(), write=lambda value: writer.data.extend(value), drain=AsyncMock())
+        task = asyncio.create_task(app._stream(writer, 0))
+        await asyncio.sleep(.02)
+        self.assertFalse(task.done())
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
     async def test_controlled_failure_is_streamed_without_private_stderr(self):
         await self.app_start("import sys; sys.stdin.read(); sys.stderr.write('private diagnostic'); sys.exit(9)")

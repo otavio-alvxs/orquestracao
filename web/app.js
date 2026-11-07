@@ -4,7 +4,10 @@
   const $ = (id) => document.getElementById(id);
   const project = $('project'), prompt = $('prompt'), start = $('start'), mode = $('mode'), profile = $('profile');
   const statusText = { idle: 'Aguardando', starting: 'Preparando execução', running: 'Em andamento', completed: 'Concluída', failed: 'Falhou', interrupted: 'Cancelada' };
-  let lastId = 0, active = false, clock;
+  let lastId = 0, active = false, clock, streamPromise = null;
+  let quotaSnapshot = null;
+  const quotaFreshnessSeconds = 180;
+  setInterval(() => { if (quotaSnapshot) renderQuotas(quotaSnapshot); }, 30000);
   projects.forEach((path) => { const option = document.createElement('option'); option.value = path; option.textContent = path; project.append(option); });
   prompt.addEventListener('input', () => $('char-count').textContent = `${prompt.value.length.toLocaleString('pt-BR')} / 16.000`);
   mode.addEventListener('change', () => {
@@ -29,6 +32,7 @@
     return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(body) });
   }
   function render(state) {
+    if (Object.hasOwn(state, 'rate_limits')) renderQuotas(state.rate_limits);
     const status = state.status || 'idle';
     $('status').className = `status ${status}`;
     $('status').querySelector('span').textContent = statusText[status] || 'Aguardando';
@@ -53,7 +57,7 @@
     $('composer').classList.toggle('hidden', $('engine').value !== 'app-server' || !['completed','failed','interrupted'].includes(status));
     $('escalation').classList.toggle('hidden', $('engine').value !== 'app-server' || !['completed','failed'].includes(status));
     $('route-info').textContent = state.requested_model ? `Solicitado: ${state.requested_model}/${state.requested_effort}${state.observed_model ? ` · rerota observada: ${state.observed_model}${state.observed_route_reason ? ` (${state.observed_route_reason})` : ''}` : ''} · ${state.route_reason || ''}${state.escalations?.length ? ` · Escalonamentos: ${state.escalations.length}` : ''}` : '';
-    renderAgents(state.agents);
+    renderAgents(state.agents, state);
     const metric = (value) => Number.isInteger(value) ? `${value.toLocaleString('pt-BR')} tokens` : 'tokens indisponíveis';
     $('tokens').textContent = state.input_tokens == null && state.output_tokens == null ? 'Tokens indisponíveis' : `Entrada ${metric(state.input_tokens)} · cache ${metric(state.cached_input_tokens)} · saída ${metric(state.output_tokens)}`;
     if (state.duration_seconds != null) $('elapsed').textContent = `${state.duration_seconds.toFixed(1)} s`;
@@ -101,32 +105,82 @@
     const label = document.createElement('strong'); label.textContent = role === 'user' ? 'Você' : 'Codex';
     const body = document.createElement('p'); body.textContent = text; li.append(label, body); $('conversation').append(li);
   }
-  function renderAgents(agents) {
-    const entries = Object.entries(agents || {}).filter(([, agent]) => agent.role !== 'Coordenador');
+  function renderQuotas(data) {
+    quotaSnapshot = data;
+    const root = $('quota-cards'); root.replaceChildren();
+    const buckets = Object.entries(data?.buckets || {}).flatMap(([id, bucket]) => [300, 10080].map((minutes) => {
+      const windowKey = ['primary', 'secondary'].find((window) => bucket?.[window]?.window_minutes === minutes);
+      const value = bucket?.[windowKey];
+      const duration = minutes === 300 ? '5 h' : 'semanal';
+      return {id, ...(value || {}), bucket, windowKey, minutes, label: `${bucket?.limit_name || id} · ${duration}`};
+    }));
+    if (!buckets.length) {
+      const empty = document.createElement('p'); empty.className = 'empty-state'; empty.textContent = data ? 'Cotas indisponíveis' : 'Aguardando dados'; root.append(empty);
+      $('quota-updated').textContent = data?.status === 'disconnected' ? `Conta desconectada · ${data?.stale ? 'dados desatualizados' : 'última atualização indisponível'}` : data?.stale ? 'Dados desatualizados' : 'Atualização indisponível'; return;
+    }
+    for (const bucket of buckets) {
+      const card = document.createElement('article'); card.className = 'quota-card';
+      const heading = document.createElement('div'); heading.className = 'quota-heading';
+      const name = document.createElement('strong'); name.textContent = bucket.label || bucket.name || 'Cota';
+      const usedPercent = Number.isFinite(bucket.used_percent) ? Math.max(0, Math.min(100, bucket.used_percent)) : null;
+      const remainingPercent = usedPercent != null ? 100 - usedPercent : null;
+      const remaining = document.createElement('span'); remaining.textContent = usedPercent != null ? `${Math.round(usedPercent)}% usado · ${Math.round(remainingPercent)}% restante` : 'Uso indisponível';
+      heading.append(name, remaining);
+      const meter = document.createElement('div'); meter.className = 'quota-meter'; meter.setAttribute('role', 'progressbar'); meter.setAttribute('aria-valuemin', '0'); meter.setAttribute('aria-valuemax', '100');
+      const fill = document.createElement('span');
+      if (usedPercent != null) { fill.style.width = `${usedPercent}%`; meter.setAttribute('aria-valuenow', String(usedPercent)); }
+      else meter.setAttribute('aria-valuetext', 'Indisponível');
+      meter.append(fill); card.append(heading, meter);
+      const meta = document.createElement('p'); meta.className = 'quota-meta';
+      const reset = bucket.resets_at ? new Date(typeof bucket.resets_at === 'number' ? bucket.resets_at * 1000 : bucket.resets_at) : null;
+      const windowUpdated = bucket.bucket.window_updated_at?.[bucket.windowKey];
+      const updatedAt = Number.isFinite(windowUpdated) ? windowUpdated : null;
+      const ageSeconds = updatedAt == null ? null : Date.now() / 1000 - updatedAt;
+      const stale = Boolean(data?.status === 'disconnected' || bucket.bucket.stale || data?.stale || ageSeconds == null || ageSeconds > quotaFreshnessSeconds);
+      const updatedText = updatedAt != null ? `Atualizado ${new Date(updatedAt * 1000).toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'})}` : 'Última atualização indisponível';
+      meta.textContent = `${stale ? 'Dados desatualizados · ' : ''}${updatedText} · Reinicia ${reset && !Number.isNaN(reset.valueOf()) ? reset.toLocaleString('pt-BR', {dateStyle:'short',timeStyle:'short'}) : 'indisponível'}`;
+      card.append(meta); root.append(card);
+    }
+    const globalUpdated = data?.updated_at ? `última atualização ${new Date(data.updated_at * 1000).toLocaleTimeString('pt-BR', {hour:'2-digit',minute:'2-digit'})}` : 'última atualização indisponível';
+    $('quota-updated').textContent = data?.status === 'disconnected' ? `Conta desconectada · dados desatualizados · ${globalUpdated}` : data?.stale ? `Dados desatualizados · ${globalUpdated}` : globalUpdated;
+  }
+  function renderAgents(agents, state = {}) {
+    const entries = Object.entries(agents || {}).filter(([id, agent]) => id !== 'coordinator' && agent.role !== 'Coordenador');
     const expanded = new Map([...$('agent-list').querySelectorAll('details')].map((node) => [node.dataset.agent, node.open]));
-    $('agents').classList.toggle('hidden', !entries.length); $('agent-list').replaceChildren();
+    $('agent-list').replaceChildren();
     const labels = { running: 'Em atividade', completed: 'Concluído', failed: 'Falhou', interrupted: 'Interrompido', shutdown: 'Encerrado', unknown: 'Estado desconhecido' };
+    const runningCount = entries.filter(([, agent]) => agent.status === 'running').length + (['running','starting'].includes(state.status) ? 1 : 0);
+    $('agent-count').textContent = `${runningCount} ativo${runningCount === 1 ? '' : 's'}`;
+    const coordinator = document.createElement('li'); coordinator.className = 'agent-row coordinator';
+    const coordHeading = document.createElement('span'); coordHeading.className = 'agent-name'; coordHeading.textContent = `Coordenador · ${labels[state.status] || 'Aguardando'}`; coordinator.append(coordHeading);
+    const requested = [state.requested_model, state.requested_effort].filter(Boolean).join(' / ');
+    const observed = [state.observed_model, state.observed_effort].filter(Boolean).join(' / ');
+    const coordDetail = document.createElement('span'); coordDetail.className = 'agent-activity';
+    coordDetail.textContent = `Solicitado: ${requested || 'indisponível'} · Observado: ${observed || 'indisponível'}`; coordinator.append(coordDetail); $('agent-list').append(coordinator);
     for (const [id, agent] of entries) {
       const li = document.createElement('li'), heading = document.createElement('span');
       const observedName = typeof agent.name === 'string' && agent.name ? agent.name :
         (id.length > 18 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id);
-      heading.textContent = `${observedName} · ${labels[agent.status] || labels.unknown}`;
+      heading.className = 'agent-name'; heading.textContent = `${observedName} · ${labels[agent.status] || labels.unknown}`;
+      const parent = agent.parent ? entries.find(([parentId]) => parentId === agent.parent)?.[1] : null;
+      li.classList.toggle('agent-child', Boolean(agent.parent));
+      if (agent.parent) { const hierarchy = document.createElement('span'); hierarchy.className = 'agent-parent'; hierarchy.textContent = `↳ ${parent?.name || agent.parent}`; li.append(hierarchy); }
       li.append(heading);
       const summaryText = agent.result || agent.activity;
       if (summaryText) { const activity = document.createElement('span'); activity.className = 'agent-activity'; activity.textContent = summaryText; li.append(activity); }
-      if (agent.model || agent.effort) {
+      {
         const technical = document.createElement('details'), summary = document.createElement('summary'), detail = document.createElement('span');
         technical.className = 'agent-technical'; technical.dataset.agent = id; technical.open = expanded.get(id) || false; summary.textContent = 'Detalhes';
-        detail.textContent = [agent.model, agent.effort].filter(Boolean).join(' · '); technical.append(summary, detail); li.append(technical);
+        detail.textContent = `Solicitado: ${[agent.requested_model, agent.requested_effort].filter(Boolean).join(' / ') || 'indisponível'} · Observado: ${[agent.observed_model || agent.model, agent.observed_effort || agent.effort].filter(Boolean).join(' / ') || 'indisponível'}`; technical.append(summary, detail); li.append(technical);
       }
       $('agent-list').append(li);
     }
   }
-  async function stream() {
+  async function consumeStream() {
     const response = await fetch('/api/events', { headers: { 'X-CSRF-Token': csrf, 'Last-Event-ID': String(lastId) } });
     if (!response.ok || !response.body) throw new Error('Não foi possível acompanhar os eventos.');
     const reader = response.body.getReader(), decoder = new TextDecoder(); let buffer = '';
-    while (active) {
+    while (true) {
       const { value, done } = await reader.read(); if (done) break;
       buffer += decoder.decode(value, { stream: true });
       let split;
@@ -145,15 +199,27 @@
         if (kind === 'state') render(parsed);
         else if (kind === 'event') addEvent(parsed.message);
         else if (kind === 'message') addMessage(parsed.role, parsed.text);
+        else if (kind === 'rate_limits') renderQuotas(parsed);
       }
     }
+  }
+  function stream() {
+    if (streamPromise) return streamPromise;
+    streamPromise = (async () => {
+      while (true) {
+        try { await consumeStream(); }
+        catch (error) { if (active) addEvent(error.message); }
+        await new Promise((resolve) => setTimeout(resolve, 900));
+      }
+    })().finally(() => { streamPromise = null; });
+    return streamPromise;
   }
   start.addEventListener('click', async () => {
     const task = prompt.value; if (!task.trim() || active) return;
     $('approval-feedback').textContent = ''; $('approval-feedback').classList.add('hidden');
-    active = true; lastId = 0; $('event-list').replaceChildren(); $('event-count').textContent = '0 eventos';
+    active = true; $('event-list').replaceChildren(); $('event-count').textContent = '0 eventos';
     $('execution').classList.remove('hidden'); $('run-title').textContent = task;
-    $('conversation').replaceChildren(); $('session-id').classList.add('hidden'); $('agents').classList.add('hidden');
+    $('conversation').replaceChildren(); $('session-id').classList.add('hidden');
     $('project-label').textContent = project.value; $('elapsed').textContent = 'Em andamento';
     $('result-panel').classList.add('hidden'); $('error').classList.add('hidden'); $('progress').style.width = '';
     start.disabled = true; start.textContent = 'Iniciando…';
@@ -164,7 +230,7 @@
       const response = await api('/api/run', { prompt: task, project: project.value, engine: $('engine').value, mode: mode.value, profile: profile.value, publish_draft_pr: publishDraftPr });
       if (!response.ok) { const detail = await response.text(); throw new Error(detail || 'Não foi possível iniciar.'); }
       lockSelection(true);
-      stream().catch((error) => { if (active) { addEvent(error.message); active = false; render({ status: 'failed', error: error.message }); } });
+      stream();
       clock = setInterval(async () => {
         const response = await fetch('/api/status', { headers: { 'X-CSRF-Token': csrf } });
         if (response.ok) render(await response.json());
@@ -182,7 +248,7 @@
       const response = await api('/api/message', { prompt: text });
       if (!response.ok) throw new Error((await response.text()) || 'Não foi possível enviar a mensagem.');
       render({ status: 'starting' });
-      stream().catch((error) => { if (active) { addEvent(error.message); active = false; render({ status: 'failed', error: error.message }); } });
+      stream();
     } catch (error) { active = false; render({ status: 'failed', error: error.message }); }
     finally { $('send-message').disabled = false; }
   });
@@ -193,7 +259,7 @@
     try {
       const response = await api('/api/message', { prompt: text, escalate: true, escalation_reason: reason });
       if (!response.ok) throw new Error((await response.text()) || 'Escalonamento não enviado.');
-      $('message').value = ''; $('escalation-reason').value = ''; render({ status: 'starting' }); stream().catch((error) => { if (active) { addEvent(error.message); active = false; render({ status: 'failed', error: error.message }); } });
+      $('message').value = ''; $('escalation-reason').value = ''; render({ status: 'starting' }); stream();
     } catch (error) { active = false; addEvent(error.message); }
     finally { $('escalate').disabled = false; }
   });
@@ -201,4 +267,6 @@
     prompt.value = ''; prompt.dispatchEvent(new Event('input')); prompt.focus(); $('execution').classList.add('hidden');
     $('approval-feedback').textContent = ''; $('approval-feedback').classList.add('hidden'); lockSelection(false);
   });
+  fetch('/api/status', { headers: { 'X-CSRF-Token': csrf } }).then((response) => response.ok ? response.json() : null).then((state) => { if (state) render(state); }).catch(() => {});
+  stream();
 })();

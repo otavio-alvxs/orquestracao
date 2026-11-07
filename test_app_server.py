@@ -119,7 +119,7 @@ for line in sys.stdin:
         self.assertEqual(run.state.final, "commentary\n\nanswer-1")
         self.assertEqual((run.state.input_tokens, run.state.output_tokens, run.state.cached_input_tokens), (20, 20, 20))
         # The collab call reports requested model/effort; these are not execution telemetry.
-        self.assertEqual(run.state.agents["agent-real"], {"status": "completed"})
+        self.assertEqual(run.state.agents["agent-real"], {"status": "completed", "parent": "coordinator", "requested_model": "model-real", "requested_effort": "high"})
         first_started = run.state.started_at
         run.prompt = " second "
         await asyncio.wait_for(collect(run), 3)
@@ -160,7 +160,8 @@ for line in sys.stdin:
                              "status": "completed", "model": "requested-model", "reasoningEffort": "high",
                              "agentsStates": {}})
         self.assertEqual(run.state.agents["agent-thread"], {
-            "status": "unknown", "activity": "Delegação observada"})
+            "status": "unknown", "activity": "Delegação observada", "parent": "coordinator",
+            "requested_model": "requested-model", "requested_effort": "high"})
         run._observe_agents({"type": "subAgentActivity", "id": "activity-1", "agentThreadId": "agent-thread",
                              "kind": "started", "model": "resolved-model", "reasoningEffort": "medium",
                              "agentPath": "/root/developer"})
@@ -170,7 +171,8 @@ for line in sys.stdin:
                              "kind": "started", "startedAtMs": 200})
         self.assertEqual(run.state.agents["agent-thread"], {
             "status": "completed", "activity": "Atividade concluída",
-            "model": "resolved-model", "effort": "medium", "name": "developer"})
+            "model": "resolved-model", "effort": "medium", "name": "developer",
+            "parent": "coordinator", "requested_model": "requested-model", "requested_effort": "high"})
         run._observe_agents({"type": "subAgentActivity", "id": "late-start", "agentThreadId": "late-agent",
                              "kind": "started", "startedAtMs": 20})
         run._observe_agents({"type": "subAgentActivity", "id": "late-complete", "agentThreadId": "late-agent",
