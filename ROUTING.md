@@ -1,4 +1,4 @@
-# Roteamento por tarefa — v0.14 / Missão 022
+# Roteamento por tarefa — v0.16 / Missão 024
 
 ## Capacidade nativa verificada
 
@@ -41,10 +41,12 @@ sandbox e aprovações continuam sob controle do Codex.
 | `intermediate` | `gpt-6-luna`, `medium` |
 | `complex` | `gpt-6.1-sol`, `medium` |
 
-`auto` usa Luna/low para entrada curta com forma reconhecida (por exemplo,
-resumir, listar ou traduzir), sem indicadores de risco. Usa Luna/medium para
-formas delimitadas reconhecidas de escopo moderado e Sol/medium para entradas
-desconhecidas, longas ou com indicadores de complexidade.
+`auto` reconhece formas limitadas em português e inglês, inclusive com
+cortesia ou contexto antes da intenção. Usa Luna/low para leitura, edição textual
+e conteúdo literal reconhecidos; Luna/medium para implementação local com
+comportamento especificado. Indicadores de risco têm precedência. Pedidos
+ambíguos, compostos, longos ou desconhecidos ficam em Sol/medium. A avaliação
+manual, suas limitações e a validação estão em [ROUTING_QUALITY.md](ROUTING_QUALITY.md).
 O código exato está em `task_routing.py`; não é um classificador semântico.
 Perfis explícitos substituem essa heurística. A escolha é enviada por campos
 nativos `model`/`effort`; no fallback exec/TUI, por `--model` e

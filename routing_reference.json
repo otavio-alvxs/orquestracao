@@ -1,0 +1,194 @@
+[
+  {
+    "prompt": "Resuma este arquivo.",
+    "desired": "simple",
+    "before": "simple",
+    "rationale": "Resumo delimitado."
+  },
+  {
+    "prompt": "Por favor, resuma o README em três frases.",
+    "desired": "simple",
+    "before": "complex",
+    "rationale": "Cortesia não altera intenção."
+  },
+  {
+    "prompt": "Summarize README.md in three sentences.",
+    "desired": "simple",
+    "before": "complex",
+    "rationale": "Resumo em inglês."
+  },
+  {
+    "prompt": "Liste os arquivos deste diretório.",
+    "desired": "simple",
+    "before": "simple",
+    "rationale": "Leitura simples."
+  },
+  {
+    "prompt": "Explique a arquitetura do sistema distribuído.",
+    "desired": "complex",
+    "before": "complex",
+    "rationale": "Análise de arquitetura."
+  },
+  {
+    "prompt": "Formate este parágrafo em Markdown.",
+    "desired": "simple",
+    "before": "simple",
+    "rationale": "Edição textual."
+  },
+  {
+    "prompt": "Please translate this paragraph into Portuguese.",
+    "desired": "simple",
+    "before": "complex",
+    "rationale": "Tradução delimitada."
+  },
+  {
+    "prompt": "Corrija o erro de digitação no título do README.",
+    "desired": "simple",
+    "before": "simple",
+    "rationale": "Correção textual."
+  },
+  {
+    "prompt": "Crie o arquivo nota.txt com o texto Olá.",
+    "desired": "simple",
+    "before": "intermediate",
+    "rationale": "Conteúdo literal sem lógica."
+  },
+  {
+    "prompt": "Create a file note.txt containing hello.",
+    "desired": "simple",
+    "before": "complex",
+    "rationale": "Conteúdo literal em inglês."
+  },
+  {
+    "prompt": "Adicione uma função clamp em utils.py que limite um número entre mínimo e máximo.",
+    "desired": "intermediate",
+    "before": "intermediate",
+    "rationale": "Implementação local com comportamento definido."
+  },
+  {
+    "prompt": "Please implement a function is_even in numbers.py returning whether an integer is even.",
+    "desired": "intermediate",
+    "before": "complex",
+    "rationale": "Implementação local em inglês."
+  },
+  {
+    "prompt": "No arquivo utils.py, implemente uma função para somar dois números.",
+    "desired": "intermediate",
+    "before": "complex",
+    "rationale": "Contexto antes da intenção."
+  },
+  {
+    "prompt": "Adicione um teste para a função clamp com valor abaixo do mínimo.",
+    "desired": "intermediate",
+    "before": "intermediate",
+    "rationale": "Teste delimitado."
+  },
+  {
+    "prompt": "Corrija a função divide em calc.py para lançar ValueError quando o divisor for zero.",
+    "desired": "intermediate",
+    "before": "intermediate",
+    "rationale": "Causa e resultado especificados."
+  },
+  {
+    "prompt": "Fix the function divide in calc.py to raise ValueError for a zero divisor.",
+    "desired": "intermediate",
+    "before": "complex",
+    "rationale": "Bug local em inglês."
+  },
+  {
+    "prompt": "Corrija o bug no arquivo app.py.",
+    "desired": "complex",
+    "before": "intermediate",
+    "rationale": "Causa e contrato desconhecidos."
+  },
+  {
+    "prompt": "Investigue por que os testes falham de forma intermitente.",
+    "desired": "complex",
+    "before": "complex",
+    "rationale": "Investigação aberta."
+  },
+  {
+    "prompt": "Debug the intermittent crash in the worker.",
+    "desired": "complex",
+    "before": "complex",
+    "rationale": "Depuração aberta."
+  },
+  {
+    "prompt": "Revise este código procurando regressões.",
+    "desired": "complex",
+    "before": "complex",
+    "rationale": "Revisão exige julgamento de risco."
+  },
+  {
+    "prompt": "Review this function for security vulnerabilities.",
+    "desired": "complex",
+    "before": "complex",
+    "rationale": "Revisão de segurança."
+  },
+  {
+    "prompt": "Crie uma função para validar permissões de administrador.",
+    "desired": "complex",
+    "before": "intermediate",
+    "rationale": "Permissões prevalecem sobre escopo local."
+  },
+  {
+    "prompt": "Implement a function to authenticate users.",
+    "desired": "complex",
+    "before": "complex",
+    "rationale": "Autenticação sensível."
+  },
+  {
+    "prompt": "Resuma o arquivo e remova as credenciais expostas.",
+    "desired": "complex",
+    "before": "simple",
+    "rationale": "Operação sensível adicional."
+  },
+  {
+    "prompt": "Crie um arquivo de migração do banco de dados.",
+    "desired": "complex",
+    "before": "complex",
+    "rationale": "Migração sensível."
+  },
+  {
+    "prompt": "Refactor the authentication architecture.",
+    "desired": "complex",
+    "before": "complex",
+    "rationale": "Refatoração e segurança."
+  },
+  {
+    "prompt": "Melhore isso.",
+    "desired": "complex",
+    "before": "complex",
+    "rationale": "Pedido ambíguo."
+  },
+  {
+    "prompt": "Adicione uma função.",
+    "desired": "complex",
+    "before": "intermediate",
+    "rationale": "Comportamento indefinido."
+  },
+  {
+    "prompt": "Resuma README.md e implemente uma função para somar dois números.",
+    "desired": "complex",
+    "before": "simple",
+    "rationale": "Operações distintas."
+  },
+  {
+    "prompt": "Liste os arquivos e publique uma release.",
+    "desired": "complex",
+    "before": "simple",
+    "rationale": "Publicação com efeito externo."
+  },
+  {
+    "prompt": "Implemente uma função para somar números e altere a API pública.",
+    "desired": "complex",
+    "before": "intermediate",
+    "rationale": "Escopo ampliado e contrato público."
+  },
+  {
+    "prompt": "Resolva P vs NP",
+    "desired": "complex",
+    "before": "complex",
+    "rationale": "Desconhecido e complexo."
+  }
+]
