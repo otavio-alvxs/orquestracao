@@ -2,6 +2,9 @@
 
 Projeto para organizar o uso incremental de agentes, modelos, skills e ferramentas, priorizando funcionalidade, velocidade e economia de recursos.
 
+Diagnóstico v0.15: [eficiência de contexto](CONTEXT_EFFICIENCY.md#v015--missão-023-diagnóstico-sobre-a-pr-15),
+sem otimização funcional ou economia comprovada nesta investigação.
+
 ## Central Web local — v0.14 (Missão 022)
 
 Inicie com Python 3.10+ e Codex CLI já autenticado. Cada diretório autorizado
