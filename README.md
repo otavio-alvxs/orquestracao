@@ -5,7 +5,10 @@ Projeto para organizar o uso incremental de agentes, modelos, skills e ferrament
 Diagnóstico v0.15: [eficiência de contexto](CONTEXT_EFFICIENCY.md#v015--missão-023-diagnóstico-sobre-a-pr-15),
 sem otimização funcional ou economia comprovada nesta investigação.
 
-## Central Web local — v0.17 (Missão 026)
+## Central Web local — v0.18 (Missão 027)
+
+Descoberta com `--projects-root`, seleção por nome e manutenção LIVE recolhível.
+Consulte [instalação, systemd e rollback](MAINTENANCE.md).
 
 A central também oferece publicação controlada de Draft PRs após tarefas de
 Desenvolvimento, com autorização explícita e validações antes da publicação.

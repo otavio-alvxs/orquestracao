@@ -1,6 +1,8 @@
 """Local browser interface for ephemeral, permission-scoped Codex runs."""
 from __future__ import annotations
 
+import maintenance
+import hashlib
 import argparse
 import asyncio
 import fcntl
@@ -333,9 +335,13 @@ class OperationsServer:
                  remote_logins: set[str] | None = None,
                  publish_runner: Callable | None = None,
                  publish_dispatch: Callable | None = None,
-                 rate_limit_monitor: RateLimitMonitor | None = None):
+                 rate_limit_monitor: RateLimitMonitor | None = None, projects_root: Path | None = None):
         self.projects = tuple(dict.fromkeys(validate_project(p) for p in projects))
-        if not self.projects:
+        self.projects_root = validate_project(projects_root) if projects_root else None
+        self.maintenance_pending = False
+        self.run_start_lock = asyncio.Lock()
+        self.maintenance_started = 0
+        if not self.projects and not self.projects_root:
             raise ValueError("Informe ao menos um diretório autorizado com --project.")
         self.codex = codex
         self.process_factory = process_factory
@@ -357,9 +363,35 @@ class OperationsServer:
         self.server: asyncio.AbstractServer | None = None
         self._clients = set()
 
+    def project_catalog(self):
+        paths = list(self.projects)
+        if self.projects_root:
+            for child in self.projects_root.iterdir():
+                try:
+                    if child.is_symlink() or not child.is_dir():
+                        continue
+                    resolved = child.resolve(strict=True)
+                    if resolved.parent != self.projects_root:
+                        continue
+                    check = subprocess.run(["git", "-C", str(resolved), "rev-parse", "--show-toplevel"],
+                                           capture_output=True, text=True, timeout=3)
+                    if check.returncode == 0 and Path(check.stdout.strip()).resolve() == resolved:
+                        paths.append(resolved)
+                except (OSError, ValueError, subprocess.SubprocessError):
+                    continue
+        return {hashlib.sha256(str(p).encode()).hexdigest(): p
+                for p in sorted(set(paths), key=lambda p: (p.name.casefold(), str(p)))}
+
+    def maintenance_busy(self):
+        return (self.maintenance_pending or self.run_start_lock.locked() or
+                bool(self.session.task and not self.session.task.done()) or
+                self.session.publish_lock.locked() or
+                bool(self.session.publish_task and not self.session.publish_task.done()) or
+                bool(getattr(self.session.run, "pending_approvals", {})))
+
     async def start(self, port: int = 8765) -> int:
         self.server = await asyncio.start_server(self._client, HOST, port, limit=MAX_BODY + 8192)
-        await self.rate_limit_monitor.start(str(self.projects[0]))
+        await self.rate_limit_monitor.start(str(self.projects[0] if self.projects else self.projects_root))
         return self.server.sockets[0].getsockname()[1]
 
     def _rate_limits_updated(self, snapshot: dict) -> None:
@@ -417,7 +449,7 @@ class OperationsServer:
             if method == "GET" and path == "/":
                 html = (WEB_ROOT / "index.html").read_text()
                 html = html.replace("__CSRF__", self.session.token).replace(
-                    "__PROJECTS_HTML__", html_lib.escape(json.dumps([str(p) for p in self.projects], ensure_ascii=False), quote=True))
+                    "__PROJECTS_HTML__", html_lib.escape(json.dumps([{ "id": key, "name": p.name, "publish": p == PUBLISH_PROJECT.resolve()} for key, p in self.project_catalog().items()], ensure_ascii=False), quote=True))
                 await self._response(writer, 200, html.encode(), "text/html; charset=utf-8")
                 return
             if method == "GET" and path in ("/app.css", "/app.js"):
@@ -425,11 +457,27 @@ class OperationsServer:
                 content_type = "text/css; charset=utf-8" if suffix == "css" else "text/javascript; charset=utf-8"
                 await self._response(writer, 200, (WEB_ROOT / f"app.{suffix}").read_bytes(), content_type)
                 return
-            if method == "GET" and path == "/api/status":
+            if method == "GET" and path == "/api/maintenance":
                 if headers.get("x-csrf-token") != self.session.token:
                     await self._response(writer, 403, b"Forbidden")
                     return
-                await self._response(writer, 200, json.dumps(self._snapshot()).encode(), "application/json")
+                result = await asyncio.to_thread(maintenance.status)
+                result['instance'] = self.session.token
+                operation = result.get('operation', {})
+                if operation.get('finished_at', 0) > self.maintenance_started:
+                    self.maintenance_pending = False
+                result["busy"] = self.maintenance_busy()
+                await self._response(writer, 200, json.dumps(result).encode(), "application/json")
+                return
+            if method == "GET" and path in ("/api/status", "/api/session"):
+                if headers.get("x-csrf-token") != self.session.token:
+                    await self._response(writer, 403, b"Forbidden")
+                    return
+                snapshot = self._snapshot()
+                if path == "/api/session":
+                    snapshot["events"] = list(self.session.events)
+                    snapshot["cursor"] = self.session.next_event
+                await self._response(writer, 200, json.dumps(snapshot).encode(), "application/json")
                 return
             if method == "GET" and path == "/api/events":
                 origin = headers.get("origin")
@@ -468,6 +516,24 @@ class OperationsServer:
                     return
                 if not isinstance(payload, dict):
                     await self._response(writer, 400, b"Invalid payload")
+                    return
+                if path == "/api/maintenance":
+                    if payload.get("confirm") is not True or payload.get("action") not in ("restart", "update"):
+                        await self._response(writer, 400, b"Confirmacao explicita necessaria")
+                        return
+                    if self.maintenance_busy():
+                        await self._response(writer, 409, b"Operacao ativa; aguarde")
+                        return
+                    self.maintenance_pending = True
+                    self.maintenance_started = time.time()
+                    result = await asyncio.to_thread(maintenance.schedule, payload["action"])
+                    if not result.get("accepted"):
+                        self.maintenance_pending = False
+                    await self._response(writer, 202 if result.get("accepted") else 409,
+                                         json.dumps(result).encode(), "application/json")
+                    return
+                if self.maintenance_pending:
+                    await self._response(writer, 409, b"Manutencao agendada")
                     return
                 if path == "/api/run":
                     await self._start_run(payload, writer)
@@ -522,12 +588,25 @@ class OperationsServer:
                     pass
 
     async def _start_run(self, payload: dict, writer: asyncio.StreamWriter) -> None:
+        if self.run_start_lock.locked():
+            await self._response(writer, 409, b"Execucao iniciando")
+            return
+        async with self.run_start_lock:
+            await self._start_run_locked(payload, writer)
+
+    async def _start_run_locked(self, payload: dict, writer: asyncio.StreamWriter) -> None:
+        if self.maintenance_pending:
+            await self._response(writer, 409, b"Manutencao agendada")
+            return
         prompt, project = payload.get("prompt"), payload.get("project")
+        catalog = self.project_catalog()
+        if isinstance(project, str) and project in catalog:
+            project = str(catalog[project])
         mode = payload.get("mode", "reading")
         if not isinstance(prompt, str) or not prompt.strip() or len(prompt) > 16000:
             await self._response(writer, 400, "A tarefa deve conter entre 1 e 16000 caracteres".encode())
             return
-        if not isinstance(project, str) or project not in {str(p) for p in self.projects}:
+        if not isinstance(project, str) or project not in {str(p) for p in catalog.values()}:
             await self._response(writer, 403, "Projeto não autorizado".encode())
             return
         if mode not in ("reading", "development"):
@@ -539,6 +618,9 @@ class OperationsServer:
             return
         if publish and mode != "development":
             await self._response(writer, 400, b"Publicacao disponivel somente em Desenvolvimento")
+            return
+        if publish and Path(project).resolve() != PUBLISH_PROJECT.resolve():
+            await self._response(writer, 403, b"Publicacao nao autorizada neste projeto")
             return
         if self.session.task and not self.session.task.done():
             await self._response(writer, 409, "Já existe uma execução ativa".encode())
@@ -682,6 +764,9 @@ class OperationsServer:
 
     async def _continue_run(self, payload: dict, writer: asyncio.StreamWriter) -> None:
         run = self.session.run
+        if self.maintenance_pending or self.run_start_lock.locked():
+            await self._response(writer, 409, b"Operacao em andamento")
+            return
         if self.session.publish_lock.locked():
             await self._response(writer, 409, b"Uma publicacao esta em andamento")
             return
@@ -745,6 +830,9 @@ class OperationsServer:
                                            "accept" in item["_available_decisions"]))}
                          for item in run.pending_approvals.values()]
         return {"status": state.status, "result": result, "error": state.error,
+                "prompt": run.prompt, "engine": self.session.engine,
+                "project": hashlib.sha256(str(Path(run.cwd)).encode()).hexdigest(),
+                "project_name": Path(run.cwd).name, "busy": self.maintenance_busy(),
                 "duration_seconds": elapsed, "input_tokens": state.input_tokens,
                 "output_tokens": state.output_tokens, "cached_input_tokens": state.cached_input_tokens,
                 "requested_model": state.requested_model, "requested_effort": state.requested_effort,
@@ -839,9 +927,9 @@ class OperationsServer:
 
 
 async def serve(projects: list[Path], port: int, codex: str | None,
-                remote_origin: str | None = None, remote_logins: set[str] | None = None) -> None:
+                remote_origin: str | None = None, remote_logins: set[str] | None = None, projects_root: Path | None = None) -> None:
     app = OperationsServer(projects, codex=codex, remote_origin=remote_origin,
-                           remote_logins=remote_logins)
+                           remote_logins=remote_logins, projects_root=projects_root)
     actual_port = await app.start(port)
     print(f"Orquestração Web disponível em http://127.0.0.1:{actual_port}", flush=True)
     try:
@@ -854,6 +942,7 @@ async def serve(projects: list[Path], port: int, codex: str | None,
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--project", action="append", default=[], help="Diretório autorizado (repetível)")
+    parser.add_argument("--projects-root", type=Path, help="Raiz autorizada para descoberta de repositorios")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--codex", help=argparse.SUPPRESS)
     parser.add_argument("--remote-origin", help="Única origem HTTPS autorizada (ex.: https://dispositivo.tailnet.ts.net)")
@@ -871,9 +960,9 @@ def main() -> None:
             parser.error("Não foi possível ler --remote-logins-file")
         if not remote_logins or any(any(c.isspace() for c in login) for login in remote_logins):
             parser.error("A allowlist deve conter ao menos um login, sem espaços")
-    projects = [Path(p) for p in (args.project or [str(Path.cwd())])]
+    projects = [Path(p) for p in (args.project or ([] if args.projects_root else [str(Path.cwd())]))]
     try:
-        asyncio.run(serve(projects, args.port, args.codex, args.remote_origin, remote_logins))
+        asyncio.run(serve(projects, args.port, args.codex, args.remote_origin, remote_logins, args.projects_root))
     except KeyboardInterrupt:
         pass
     except (OSError, ValueError) as exc:
