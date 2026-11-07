@@ -31,6 +31,7 @@
         <div class="select-wrap"><select id="mode"><option value="reading">Leitura · sem alterações</option><option value="development">Desenvolvimento · pode alterar arquivos</option></select></div>
         <p id="mode-help" class="mode-help">Leitura usa sandbox readOnly.</p>
       </div>
+      <label id="publish-option" class="publish-option hidden"><input id="publish-draft-pr" type="checkbox"> Autorizar criação de um Draft PR após esta tarefa, uma única vez. O Codex precisa criar um commit novo em feat/* e deixar a árvore de trabalho limpa.</label>
       <div class="field task-field">
         <div class="label-line"><label for="prompt">SUA TAREFA</label><span id="char-count">0 / 16.000</span></div>
         <textarea id="prompt" maxlength="16000" placeholder="Ex.: Analise a estrutura do projeto e resuma seus principais componentes…" spellcheck="true"></textarea>
@@ -48,6 +49,7 @@
       <div id="session-id" class="session-id hidden"></div>
       <section id="approval-panel" class="approval-panel hidden" aria-live="polite"><div class="approval-heading"><strong>Autorização solicitada</strong></div><div id="approval-list"></div></section>
       <p id="approval-feedback" class="approval-feedback hidden" aria-live="polite"></p>
+      <section id="publish-panel" class="publish-panel hidden" aria-live="polite"><p id="publish-status"></p></section>
       <div id="changed-files" class="changed-files hidden"></div>
       <ol id="conversation" class="conversation" aria-label="Conversa atual"></ol>
       <div id="composer" class="composer hidden"><textarea id="message" maxlength="16000" placeholder="Enviar uma mensagem nesta sessão…"></textarea><button id="send-message" class="primary">Enviar</button></div>

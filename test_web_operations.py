@@ -1,14 +1,16 @@
 import asyncio
 import json
 import sys
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 from app_server import AppServerRun
-from web_operations import OperationsServer
+from web_operations import OperationsServer, _publish_draft_pr, PublishError
 
 SUCCESS = '''import sys
 sys.stdin.read()
@@ -52,6 +54,382 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
             await self.app.close()
         self.temp.cleanup()
 
+    def test_publisher_real_git_snapshot_offline(self):
+        git = shutil.which("git")
+        if not git:
+            self.skipTest("Git indisponível")
+        def local_git(*args, **kwargs):
+            return subprocess.run([git, *args], cwd=self.root, check=True,
+                                  capture_output=True, text=True, **kwargs).stdout.strip()
+        local_git("init", "--initial-branch=feat/offline")
+        local_git("config", "user.name", "Offline Test")
+        local_git("config", "user.email", "offline@example.invalid")
+        local_git("remote", "add", "origin", "https://github.com/otavio-alvxs/orquestracao.git")
+        tracked = self.root / "example.txt"
+        tracked.write_text("baseline\n")
+        local_git("add", ".")
+        local_git("commit", "-m", "baseline")
+        baseline = local_git("rev-parse", "HEAD")
+        tracked.write_text("updated\n")
+        local_git("commit", "-am", "update")
+        head = local_git("rev-parse", "HEAD")
+        real_run = subprocess.run
+        network = []
+        def offline_run(args, **kwargs):
+            if args[0] == str(Path(sys.executable).resolve()):
+                network.append("github")
+                self.assertIn("list", args)
+                return SimpleNamespace(returncode=0, stdout=json.dumps([{
+                    "url": "https://github.com/otavio-alvxs/orquestracao/pull/8",
+                    "isDraft": True, "baseRefName": "main"}]))
+            if "push" in args:
+                network.append("push")
+                snapshot = Path(kwargs["env"]["GIT_DIR"])
+                self.assertNotEqual(snapshot, self.root / ".git")
+                self.assertEqual(real_run([git, "rev-parse", "HEAD"], cwd=snapshot,
+                                         env=kwargs["env"], capture_output=True,
+                                         text=True, check=True).stdout.strip(), head)
+                self.assertIn(head + ":refs/heads/feat/offline", args)
+                return SimpleNamespace(returncode=0, stdout="")
+            return real_run(args, **kwargs)
+        with patch("web_operations.PUBLISH_PROJECT", self.root), \
+             patch("web_operations.shutil.which", side_effect=lambda name: git if name == "git" else sys.executable), \
+             patch("web_operations.subprocess.run", side_effect=offline_run):
+            self.assertIn("Draft PR existente", _publish_draft_pr(str(self.root), baseline))
+            self.assertEqual(network, ["github", "push"])
+            network.clear()
+            with self.assertRaisesRegex(PublishError, "commits novos"):
+                _publish_draft_pr(str(self.root), head)
+            tracked.write_text("dirty\n")
+            with self.assertRaisesRegex(PublishError, "limpo"):
+                _publish_draft_pr(str(self.root), baseline)
+            self.assertEqual(network, [])
+        self.assertEqual(local_git("rev-parse", "HEAD"), head)
+
+    async def test_cancel_during_publication_preserves_real_result(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def dispatch(callback, *args):
+            entered.set()
+            await release.wait()
+            return "Draft PR criado: resultado real"
+        self.app = OperationsServer([self.root], publish_dispatch=dispatch)
+        self.port = await self.app.start(0)
+        self.origin = f"http://127.0.0.1:{self.port}"
+        self.auth = {"Origin": self.origin, "X-CSRF-Token": self.app.session.token}
+        run = AppServerRun(str(self.root), "ok", mode="development")
+        async def events():
+            run.state.status = "completed"
+            yield "done"
+        run.events = events
+        run.cancel = AsyncMock()
+        self.app.session.run = run
+        self.app.session.publish_authorized = True
+        self.app.session.publish_baseline = "a" * 40
+        with patch("web_operations.PUBLISH_PROJECT", self.root):
+            self.app.session.task = asyncio.create_task(self.app._execute(run))
+            try:
+                await asyncio.wait_for(entered.wait(), 3)
+                status, _, body = await self.post("/api/cancel", {})
+                self.assertEqual(status, 409)
+                self.assertIn("Publicação já iniciada", body.decode())
+                self.assertEqual(self.app.session.publish_result, "Criando Draft PR…")
+                run.cancel.assert_not_awaited()
+            finally:
+                release.set()
+                await asyncio.wait_for(self.app.session.task, 3)
+        self.assertEqual(self.app.session.publish_result, "Draft PR criado: resultado real")
+        self.assertEqual(run.state.status, "completed")
+
+    def test_publisher_pushes_snapshot_and_confirms_pr_url(self):
+        (self.root / ".git").mkdir()
+        (self.root / ".git" / "config").write_text('[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\nfetch=+refs/heads/*:refs/remotes/origin/*\n')
+        calls = []
+        outputs = [
+            SimpleNamespace(returncode=0, stdout=str(self.root / ".git")),
+            SimpleNamespace(returncode=0, stdout=str(self.root)),
+            SimpleNamespace(returncode=0, stdout="[]"),
+            SimpleNamespace(returncode=0, stdout=""),
+            SimpleNamespace(returncode=0, stdout=json.dumps({"url":"https://github.com/otavio-alvxs/orquestracao/pull/8"})),
+        ]
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs))
+            if "--absolute-git-dir" in args: return SimpleNamespace(returncode=0, stdout=str(self.root / ".git"))
+            if "--show-toplevel" in args: return SimpleNamespace(returncode=0, stdout=str(self.root))
+            if "--is-inside-work-tree" in args: return SimpleNamespace(returncode=0, stdout="true")
+            if "symbolic-ref" in args: return SimpleNamespace(returncode=0, stdout="feat/test")
+            if "status" in args: return SimpleNamespace(returncode=0, stdout="")
+            if "rev-parse" in args: return SimpleNamespace(returncode=0, stdout="a" * 40)
+            if "merge-base" in args: return SimpleNamespace(returncode=0, stdout="")
+            if "rev-list" in args: return SimpleNamespace(returncode=0, stdout="2")
+            if "show" in args: return SimpleNamespace(returncode=0, stdout="ignored subject")
+            if args[0] == "/usr/bin/gh" and "list" in args:
+                return SimpleNamespace(returncode=0, stdout="[]")
+            if args[0] == "/usr/bin/gh" and "create" in args:
+                return SimpleNamespace(returncode=0, stdout="")
+            if args[0] == "/usr/bin/gh" and "view" in args:
+                return SimpleNamespace(returncode=0, stdout=json.dumps({"url":"https://github.com/otavio-alvxs/orquestracao/pull/8"}))
+            if "push" in args: return SimpleNamespace(returncode=0, stdout="")
+            return outputs.pop(0)
+        with patch("web_operations.shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), \
+             patch("web_operations.subprocess.run", side_effect=fake_run), \
+             patch("web_operations.fcntl.flock"), \
+             patch("web_operations.PUBLISH_PROJECT", self.root):
+            with patch("web_operations.Path.resolve", autospec=True, side_effect=lambda path, **kw: path):
+                result = _publish_draft_pr(str(self.root), "b" * 40)
+        self.assertEqual(result, "Draft PR criado: https://github.com/otavio-alvxs/orquestracao/pull/8")
+        push = next(args for args, _ in calls if args[0] == "/usr/bin/git" and "push" in args)
+        self.assertIn("a" * 40 + ":refs/heads/feat/test", push)
+        push_kwargs = next(kwargs for args, kwargs in calls if args == push)
+        self.assertEqual(str(push_kwargs["cwd"]), push_kwargs["env"]["GIT_DIR"])
+        self.assertNotEqual(push_kwargs["cwd"], str(self.root))
+        self.assertEqual(push_kwargs["env"].get("GIT_NO_REPLACE_OBJECTS"), "1")
+        self.assertTrue(all(kwargs.get("env", {}).get("GIT_NO_REPLACE_OBJECTS") == "1"
+                            for args, kwargs in calls if args[0] == "/usr/bin/git"))
+        gh_create = next(args for args, _ in calls if args[0] == "/usr/bin/gh" and "create" in args)
+        self.assertIn("--draft", gh_create)
+        self.assertIn("Atualização da branch feat/test", gh_create)
+
+    def test_publisher_returns_existing_validated_pr_url(self):
+        (self.root / ".git").mkdir()
+        (self.root / ".git" / "config").write_text('[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\n')
+        outputs = [
+            SimpleNamespace(returncode=0, stdout=str(self.root / ".git")),
+            SimpleNamespace(returncode=0, stdout=str(self.root)),
+        ]
+        calls = []
+        def fake_run(args, **kwargs):
+            calls.append((args, kwargs))
+            if "--absolute-git-dir" in args: return SimpleNamespace(returncode=0, stdout=str(self.root / ".git"))
+            if "--show-toplevel" in args: return SimpleNamespace(returncode=0, stdout=str(self.root))
+            if "--is-inside-work-tree" in args: return SimpleNamespace(returncode=0, stdout="true")
+            if "symbolic-ref" in args: return SimpleNamespace(returncode=0, stdout="feat/test")
+            if "status" in args: return SimpleNamespace(returncode=0, stdout="")
+            if "rev-parse" in args: return SimpleNamespace(returncode=0, stdout="c" * 40)
+            if args[0] == "/usr/bin/gh" and "list" in args:
+                return SimpleNamespace(returncode=0, stdout=json.dumps([{"url":"https://github.com/otavio-alvxs/orquestracao/pull/9", "isDraft": True, "baseRefName": "main"}]))
+            if "merge-base" in args: return SimpleNamespace(returncode=0, stdout="")
+            if "rev-list" in args: return SimpleNamespace(returncode=0, stdout="1")
+            if "push" in args: return SimpleNamespace(returncode=0, stdout="")
+            if args[0] == "/usr/bin/gh" and "list" in args:
+                return SimpleNamespace(returncode=0, stdout=json.dumps([{"url":"https://github.com/otavio-alvxs/orquestracao/pull/9", "isDraft": True, "baseRefName": "main"}]))
+            return outputs.pop(0)
+        with patch("web_operations.shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), \
+             patch("web_operations.subprocess.run", side_effect=fake_run), \
+             patch("web_operations.Path.resolve", autospec=True, side_effect=lambda path, **kw: path), \
+             patch("web_operations.fcntl.flock"), \
+             patch("web_operations.PUBLISH_PROJECT", self.root):
+            result = _publish_draft_pr(str(self.root), "b" * 40)
+        self.assertEqual(result, "Draft PR existente: https://github.com/otavio-alvxs/orquestracao/pull/9")
+        self.assertTrue(any("push" in args for args, _ in calls))
+        list_call = next(args for args, _ in calls if args[0] == "/usr/bin/gh" and "list" in args)
+        self.assertNotIn("--base", list_call)
+        self.assertIn("url,isDraft,baseRefName", list_call)
+
+    def test_publisher_rejects_existing_non_draft_without_push(self):
+        (self.root / ".git").mkdir()
+        (self.root / ".git" / "config").write_text('[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\n')
+        calls = []
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            if "--absolute-git-dir" in args: return SimpleNamespace(returncode=0, stdout=str(self.root / ".git"))
+            if "--show-toplevel" in args: return SimpleNamespace(returncode=0, stdout=str(self.root))
+            if "--is-inside-work-tree" in args: return SimpleNamespace(returncode=0, stdout="true")
+            if "symbolic-ref" in args: return SimpleNamespace(returncode=0, stdout="feat/test")
+            if "status" in args: return SimpleNamespace(returncode=0, stdout="")
+            if "rev-parse" in args: return SimpleNamespace(returncode=0, stdout="c" * 40)
+            if "merge-base" in args: return SimpleNamespace(returncode=0, stdout="")
+            if "rev-list" in args: return SimpleNamespace(returncode=0, stdout="1")
+            if args[0] == "/usr/bin/gh" and "list" in args:
+                return SimpleNamespace(returncode=0, stdout=json.dumps([{"url":"https://github.com/otavio-alvxs/orquestracao/pull/9", "isDraft": False, "baseRefName": "main"}]))
+            raise AssertionError("Unexpected command after non-draft PR")
+        with patch("web_operations.shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), \
+             patch("web_operations.subprocess.run", side_effect=fake_run), \
+             patch("web_operations.Path.resolve", autospec=True, side_effect=lambda path, **kw: path), \
+             patch("web_operations.fcntl.flock"), \
+             patch("web_operations.PUBLISH_PROJECT", self.root):
+            with self.assertRaises(PublishError):
+                _publish_draft_pr(str(self.root), "b" * 40)
+        self.assertFalse(any("push" in args for args in calls))
+
+    def test_publisher_rejects_existing_pr_with_other_base_or_multiple_prs(self):
+        for rows in (
+            [{"url": "https://github.com/otavio-alvxs/orquestracao/pull/10", "isDraft": True, "baseRefName": "release"}],
+            [{"url": "https://github.com/otavio-alvxs/orquestracao/pull/10", "isDraft": True, "baseRefName": "main"},
+             {"url": "https://github.com/otavio-alvxs/orquestracao/pull/11", "isDraft": True, "baseRefName": "main"}],
+        ):
+            with self.subTest(rows=rows), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / ".git").mkdir()
+                (root / ".git" / "config").write_text('[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\n')
+                calls = []
+                def fake_run(args, **kwargs):
+                    calls.append(args)
+                    if "--absolute-git-dir" in args: return SimpleNamespace(returncode=0, stdout=str(root / ".git"))
+                    if "--show-toplevel" in args: return SimpleNamespace(returncode=0, stdout=str(root))
+                    if "--is-inside-work-tree" in args: return SimpleNamespace(returncode=0, stdout="true")
+                    if "symbolic-ref" in args: return SimpleNamespace(returncode=0, stdout="feat/test")
+                    if "status" in args: return SimpleNamespace(returncode=0, stdout="")
+                    if "rev-parse" in args: return SimpleNamespace(returncode=0, stdout="c" * 40)
+                    if "merge-base" in args: return SimpleNamespace(returncode=0, stdout="")
+                    if "rev-list" in args: return SimpleNamespace(returncode=0, stdout="1")
+                    if args[0] == "/usr/bin/gh" and "list" in args:
+                        return SimpleNamespace(returncode=0, stdout=json.dumps(rows))
+                    raise AssertionError("Unexpected command before rejecting unsafe existing PR")
+                with patch("web_operations.shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), \
+                     patch("web_operations.subprocess.run", side_effect=fake_run), \
+                     patch("web_operations.Path.resolve", autospec=True, side_effect=lambda path, **kw: path), \
+                     patch("web_operations.fcntl.flock"), \
+                     patch("web_operations.PUBLISH_PROJECT", root):
+                    with self.assertRaises(PublishError):
+                        _publish_draft_pr(str(root), "b" * 40)
+                self.assertFalse(any("push" in args for args in calls))
+
+    def test_publisher_rejects_non_configured_checkout(self):
+        with patch("web_operations.PUBLISH_PROJECT", self.root / "another-checkout"):
+            with self.assertRaises(PublishError):
+                _publish_draft_pr(str(self.root), "b" * 40)
+
+    def test_publisher_rejects_invalid_existing_pr_url(self):
+        (self.root / ".git").mkdir()
+        (self.root / ".git" / "config").write_text('[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\n')
+        def fake_run(args, **kwargs):
+            if "--absolute-git-dir" in args: return SimpleNamespace(returncode=0, stdout=str(self.root / ".git"))
+            if "--show-toplevel" in args: return SimpleNamespace(returncode=0, stdout=str(self.root))
+            if "--is-inside-work-tree" in args: return SimpleNamespace(returncode=0, stdout="true")
+            if "symbolic-ref" in args: return SimpleNamespace(returncode=0, stdout="feat/test")
+            if "status" in args: return SimpleNamespace(returncode=0, stdout="")
+            if "rev-parse" in args: return SimpleNamespace(returncode=0, stdout="c" * 40)
+            if "merge-base" in args: return SimpleNamespace(returncode=0, stdout="")
+            if "rev-list" in args: return SimpleNamespace(returncode=0, stdout="1")
+            if args[0] == "/usr/bin/gh" and "list" in args:
+                return SimpleNamespace(returncode=0, stdout=json.dumps([{"url":"https://evil.test/pull/1", "isDraft": True, "baseRefName": "main"}]))
+            raise AssertionError("Unexpected command after invalid PR URL")
+        with patch("web_operations.shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), \
+             patch("web_operations.subprocess.run", side_effect=fake_run), \
+             patch("web_operations.Path.resolve", autospec=True, side_effect=lambda path, **kw: path), \
+             patch("web_operations.fcntl.flock"), \
+             patch("web_operations.PUBLISH_PROJECT", self.root):
+            with self.assertRaises(PublishError):
+                _publish_draft_pr(str(self.root), "b" * 40)
+
+    def test_publisher_blocks_when_gh_cannot_validate_authentication(self):
+        (self.root / ".git").mkdir()
+        (self.root / ".git" / "config").write_text('[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\n')
+        calls = []
+        def fake_run(args, **kwargs):
+            calls.append(args)
+            if "--absolute-git-dir" in args: return SimpleNamespace(returncode=0, stdout=str(self.root / ".git"))
+            if "--show-toplevel" in args: return SimpleNamespace(returncode=0, stdout=str(self.root))
+            if "--is-inside-work-tree" in args: return SimpleNamespace(returncode=0, stdout="true")
+            if "symbolic-ref" in args: return SimpleNamespace(returncode=0, stdout="feat/test")
+            if "status" in args: return SimpleNamespace(returncode=0, stdout="")
+            if "rev-parse" in args: return SimpleNamespace(returncode=0, stdout="c" * 40)
+            if "merge-base" in args: return SimpleNamespace(returncode=0, stdout="")
+            if "rev-list" in args: return SimpleNamespace(returncode=0, stdout="1")
+            if args[0] == "/usr/bin/gh" and "list" in args:
+                return SimpleNamespace(returncode=1, stdout="")
+            raise AssertionError("Unexpected command after gh authentication failure")
+        with patch("web_operations.shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), \
+             patch("web_operations.subprocess.run", side_effect=fake_run), \
+             patch("web_operations.Path.resolve", autospec=True, side_effect=lambda path, **kw: path), \
+             patch("web_operations.fcntl.flock"), \
+             patch("web_operations.PUBLISH_PROJECT", self.root):
+            with self.assertRaises(PublishError):
+                _publish_draft_pr(str(self.root), "b" * 40)
+        self.assertFalse(any("push" in args for args in calls))
+
+    def test_publisher_rejects_protected_branch_dirty_tree_and_bad_local_config(self):
+        cases = [
+            ("protected branch", '[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\n', "main", ""),
+            ("dirty tree", '[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\n', "feat/test", " M file"),
+            ("wrong remote", '[remote "origin"]\nurl=https://example.com/attacker/repo.git\n', "feat/test", ""),
+            ("config include", '[include]\npath=/tmp/untrusted\n[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\n', "feat/test", ""),
+            ("executable config", '[core]\nsshCommand=/tmp/attacker\n[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\n', "feat/test", ""),
+            ("attribute filter", '[core]\nattributesFile=/tmp/attacker-attributes\n[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\n', "feat/test", ""),
+            ("hooks path", '[core]\nhooksPath=/tmp/attacker-hooks\n[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\n', "feat/test", ""),
+            ("fsmonitor", '[core]\nfsmonitor=/tmp/attacker-fsmonitor\n[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\n', "feat/test", ""),
+            ("credential helper", '[credential]\nhelper=/tmp/attacker-credential\n[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\n', "feat/test", ""),
+            ("url rewrite", '[url "https://example.com/attacker/"]\ninsteadOf=https://github.com/otavio-alvxs/\n[remote "origin"]\nurl=https://github.com/otavio-alvxs/orquestracao.git\n', "feat/test", ""),
+        ]
+        for label, config, branch, status in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / ".git").mkdir()
+                (root / ".git" / "config").write_text(config)
+                gh_calls = []
+                def fake_run(args, **kwargs):
+                    if "--absolute-git-dir" in args: return SimpleNamespace(returncode=0, stdout=str(root / ".git"))
+                    if "--show-toplevel" in args: return SimpleNamespace(returncode=0, stdout=str(root))
+                    if args[0] == "/usr/bin/gh": gh_calls.append(args)
+                    if "--is-inside-work-tree" in args: return SimpleNamespace(returncode=0, stdout="true")
+                    if "symbolic-ref" in args: return SimpleNamespace(returncode=0, stdout=branch)
+                    if "status" in args: return SimpleNamespace(returncode=0, stdout=status)
+                    return SimpleNamespace(returncode=1, stdout="")
+                with patch("web_operations.shutil.which", side_effect=lambda name: f"/usr/bin/{name}"), \
+                     patch("web_operations.subprocess.run", side_effect=fake_run), \
+                     patch("web_operations.Path.resolve", autospec=True, side_effect=lambda path, **kw: path), \
+                     patch("web_operations.PUBLISH_PROJECT", root):
+                    with self.assertRaises(PublishError):
+                        _publish_draft_pr(str(root), "d" * 40)
+                self.assertEqual(gh_calls, [])
+
+    def test_publish_checkbox_is_opt_in_and_reset_after_mode_change_and_submission(self):
+        html = (Path(__file__).with_name("web") / "index.html").read_text()
+        js = (Path(__file__).with_name("web") / "app.js").read_text()
+        checkbox = html.split('id="publish-draft-pr"', 1)[1].split(">", 1)[0]
+        self.assertNotIn(" checked", checkbox)
+        self.assertIn("O Codex precisa criar um commit novo em feat/* e deixar a árvore de trabalho limpa.", html)
+        self.assertIn("if (!dev) $('publish-draft-pr').checked = false;", js)
+        self.assertIn("$('publish-draft-pr').checked = false;", js)
+
+    async def test_continue_consumes_publish_authorization(self):
+        self.app = OperationsServer([self.root])
+        run = AppServerRun(str(self.root), "original", mode="development")
+        run.thread_id = "thread-1"
+        run.events = lambda: None
+        self.app.session.run = run
+        self.app.session.engine = "app-server"
+        self.app.session.publish_authorized = True
+        async def response(writer, status, body, content_type="text/plain"):
+            self.assertEqual(status, 202)
+        self.app._response = response
+        await self.app._continue_run({"prompt": "follow-up"}, None)
+        self.assertFalse(self.app.session.publish_authorized)
+        if self.app.session.task:
+            self.app.session.task.cancel()
+            await asyncio.gather(self.app.session.task, return_exceptions=True)
+
+    async def test_cancel_consumes_publish_authorization_immediately(self):
+        self.app = OperationsServer([self.root])
+        run = SimpleNamespace(state=SimpleNamespace(status="running"), cancel=AsyncMock())
+        self.app.session.run = run
+        self.app.session.publish_authorized = True
+
+        class Writer:
+            def __init__(self): self.buffer = bytearray(); self.closed = False
+            def write(self, data): self.buffer.extend(data)
+            async def drain(self): pass
+            def is_closing(self): return self.closed
+            def close(self): self.closed = True
+            async def wait_closed(self): pass
+            def get_extra_info(self, name): return ("127.0.0.1", 5555) if name == "peername" else None
+
+        body = b"{}"
+        reader = asyncio.StreamReader()
+        reader.feed_data(b"POST /api/cancel HTTP/1.1\r\nHost: 127.0.0.1:1234\r\nOrigin: http://127.0.0.1:1234\r\nX-CSRF-Token: " + self.app.session.token.encode() + b"\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n" + body)
+        reader.feed_eof()
+        writer = Writer()
+        await self.app._client(reader, writer)
+        self.assertFalse(self.app.session.publish_authorized)
+        self.assertTrue(self.app.session.publish_attempted)
+        self.assertIn("cancelada", self.app.session.publish_result)
+        run.cancel.assert_awaited_once()
+
+    def test_publisher_blocks_when_gh_auth_helper_is_unavailable(self):
+        with patch("web_operations.shutil.which", side_effect=lambda name: "/usr/bin/git" if name == "git" else None):
+            with self.assertRaises(PublishError):
+                _publish_draft_pr(str(self.root), "e" * 40)
+
     async def app_start(self, script):
         async def factory(*args, **kwargs):
             return await asyncio.create_subprocess_exec(sys.executable, "-u", "-c", script, **kwargs)
@@ -76,6 +454,123 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.post("/api/run", {"prompt": "x", "project": str(self.root / "..") }))[0], 403)
         self.assertEqual((await http(self.port, "GET", "/api/events", {"X-CSRF-Token": self.app.session.token, "Sec-Fetch-Site": "cross-site"}))[0], 403)
         self.assertEqual((await http(self.port, "GET", "/api/events", {"Origin": "http://evil.test", "X-CSRF-Token": self.app.session.token}))[0], 403)
+
+    async def test_draft_pr_requires_development_and_csrf(self):
+        await self.app_start(SUCCESS)
+        self.assertEqual((await self.post("/api/run", {"prompt": "x", "project": str(self.root), "publish_draft_pr": True}))[0], 400)
+        self.assertEqual((await self.post("/api/run", {"prompt": "x", "project": str(self.root), "mode": "development", "publish_draft_pr": "yes"}))[0], 400)
+        self.assertEqual((await self.post("/api/publish", {}, {"Origin": self.origin, "X-CSRF-Token": "bad", "Content-Type": "application/json"}))[0], 403)
+
+    async def test_draft_pr_one_shot_after_success_and_not_reused(self):
+        calls = []
+        def publisher(path, baseline):
+            calls.append((path, baseline))
+            return "Draft PR criado: https://github.com/otavio-alvxs/orquestracao/pull/1"
+        async def inline_dispatch(callback, *args):
+            return callback(*args)
+        self.app = OperationsServer([self.root], publish_runner=publisher, publish_dispatch=inline_dispatch)
+        run = AppServerRun(str(self.root), "ok", mode="development")
+        async def events():
+            run.state.status = "completed"
+            yield "done"
+        run.events = events
+        self.app.session.run = run
+        self.app.session.engine = "app-server"
+        self.app.session.publish_authorized = True
+        self.app.session.publish_baseline = "a" * 40
+        from unittest.mock import patch
+        with patch("web_operations.PUBLISH_PROJECT", self.root):
+            self.app.session.task = asyncio.create_task(self.app._execute(run))
+            await asyncio.wait_for(self.app.session.task, 3)
+        self.assertEqual(self.app.session.run.state.status, "completed")
+        self.assertEqual(self.app.session.publish_result, "Draft PR criado: https://github.com/otavio-alvxs/orquestracao/pull/1")
+        self.assertEqual(calls, [(str(self.root), "a" * 40)])
+        self.assertTrue(self.app.session.publish_attempted)
+        self.assertFalse(self.app.session.publish_authorized)
+        del self.app
+
+    async def test_draft_pr_reuses_existing_result_without_republishing(self):
+        calls = []
+        self.app = OperationsServer([self.root], publish_runner=lambda path, baseline: calls.append((path, baseline)))
+        self.app.session.publish_authorized = True
+        self.app.session.publish_attempted = True
+        self.app.session.publish_result = "Draft PR existente: https://github.com/otavio-alvxs/orquestracao/pull/7"
+        async def response(writer, status, body, content_type="text/plain"):
+            self.assertEqual(status, 200)
+            self.assertIn(b"/pull/7", body)
+        self.app._response = response
+        await self.app._publish(None)
+        self.assertEqual(calls, [])
+
+    async def test_draft_pr_attempt_failure_consumes_authorization(self):
+        calls = []
+        def publisher(path, baseline):
+            calls.append((path, baseline))
+            raise RuntimeError("sem auth")
+        async def inline_dispatch(callback, *args):
+            return callback(*args)
+        self.app = OperationsServer([self.root], publish_runner=publisher, publish_dispatch=inline_dispatch)
+        run = AppServerRun(str(self.root), "ok", mode="development")
+        async def events():
+            run.state.status = "completed"
+            yield "done"
+        run.events = events
+        self.app.session.run = run
+        self.app.session.engine = "app-server"
+        self.app.session.publish_authorized = True
+        self.app.session.publish_baseline = "b" * 40
+        with patch("web_operations.PUBLISH_PROJECT", self.root):
+            self.app.session.task = asyncio.create_task(self.app._execute(run))
+            await asyncio.wait_for(self.app.session.task, 3)
+        self.assertTrue(self.app.session.publish_attempted)
+        self.assertFalse(self.app.session.publish_authorized)
+        self.assertEqual(calls, [(str(self.root), "b" * 40)])
+        del self.app
+
+    async def test_draft_pr_is_not_attempted_after_interrupted_turn(self):
+        calls = []
+        async def inline_dispatch(callback, *args):
+            return callback(*args)
+        self.app = OperationsServer([self.root],
+                                    publish_runner=lambda *args: calls.append(args),
+                                    publish_dispatch=inline_dispatch)
+        run = AppServerRun(str(self.root), "ok", mode="development")
+        async def events():
+            run.state.status = "interrupted"
+            yield "interrupted"
+        run.events = events
+        self.app.session.run = run
+        self.app.session.engine = "app-server"
+        self.app.session.publish_authorized = True
+        self.app.session.publish_baseline = "f" * 40
+        with patch("web_operations.PUBLISH_PROJECT", self.root):
+            self.app.session.task = asyncio.create_task(self.app._execute(run))
+            await asyncio.wait_for(self.app.session.task, 3)
+        self.assertTrue(self.app.session.publish_attempted)
+        self.assertFalse(self.app.session.publish_authorized)
+        self.assertIn("não concluiu", self.app.session.publish_result)
+        self.assertEqual(calls, [])
+        del self.app
+
+    async def test_draft_pr_authorization_is_consumed_on_execution_exception(self):
+        async def inline_dispatch(callback, *args):
+            return callback(*args)
+        self.app = OperationsServer([self.root], publish_runner=lambda *args: None,
+                                    publish_dispatch=inline_dispatch)
+        run = AppServerRun(str(self.root), "ok", mode="development")
+        async def events():
+            raise RuntimeError("failed event stream")
+            yield "unreachable"
+        run.events = events
+        self.app.session.run = run
+        self.app.session.publish_authorized = True
+        self.app.session.publish_baseline = "b" * 40
+        await self.app._execute(run)
+        self.assertEqual(run.state.status, "failed")
+        self.assertFalse(self.app.session.publish_authorized)
+        self.assertTrue(self.app.session.publish_attempted)
+        self.assertIn("não concluiu", self.app.session.publish_result)
+        del self.app
 
     async def test_remote_origin_requires_serve_identity_for_every_route(self):
         script = r'''import json,sys,time
