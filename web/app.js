@@ -14,6 +14,8 @@
     $('engine').disabled = dev;
     if (dev) $('engine').value = 'app-server';
     $('effective-mode').textContent = dev ? 'Desenvolvimento' : 'Leitura';
+    $('publish-option').classList.toggle('hidden', !dev);
+    if (!dev) $('publish-draft-pr').checked = false;
   });
   function lockSelection(locked) {
     project.disabled = locked;
@@ -40,6 +42,8 @@
     else if (state.mode === 'reading') $('effective-mode').textContent = 'Leitura · readOnly';
     lockSelection(['starting', 'running'].includes(status) || Boolean(state.thread_id));
     renderApprovals(state.approvals || []);
+    $('publish-panel').classList.toggle('hidden', !state.publish_attempted && !state.publish_result);
+    $('publish-status').textContent = state.publish_result || '';
     const files = state.changed_files || [];
     $('changed-files').classList.toggle('hidden', files.length === 0);
     $('changed-files').textContent = files.length ? `Alterações locais observadas: ${files.join(', ')}` : '';
@@ -155,7 +159,9 @@
     start.disabled = true; start.textContent = 'Iniciando…';
     render({ status: 'starting', mode: mode.value });
     try {
-      const response = await api('/api/run', { prompt: task, project: project.value, engine: $('engine').value, mode: mode.value, profile: profile.value });
+      const publishDraftPr = $('publish-draft-pr').checked;
+      $('publish-draft-pr').checked = false;
+      const response = await api('/api/run', { prompt: task, project: project.value, engine: $('engine').value, mode: mode.value, profile: profile.value, publish_draft_pr: publishDraftPr });
       if (!response.ok) { const detail = await response.text(); throw new Error(detail || 'Não foi possível iniciar.'); }
       lockSelection(true);
       stream().catch((error) => { if (active) { addEvent(error.message); active = false; render({ status: 'failed', error: error.message }); } });

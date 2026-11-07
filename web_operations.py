@@ -3,12 +3,20 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import html as html_lib
 from email.header import decode_header
 import json
+import os
 import re
+import shlex
 import secrets
+import shutil
+import subprocess
+import tempfile
 import time
+import configparser
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -22,6 +30,276 @@ MAX_BODY = 70 * 1024
 TERMINAL = {"completed", "failed", "interrupted"}
 WEB_ROOT = Path(__file__).with_name("web")
 TAILSCALE_ORIGIN = re.compile(r"https://(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.){2}ts\.net\Z")
+PUBLISH_REPO = "otavio-alvxs/orquestracao"
+PUBLISH_REMOTE = "https://github.com/otavio-alvxs/orquestracao.git"
+PUBLISH_PROJECT = Path.home() / "repos" / "orquestracao"
+PUBLISH_BRANCH = re.compile(r"feat/[A-Za-z0-9][A-Za-z0-9._/-]{0,100}\Z")
+
+
+class PublishError(Exception):
+    """A safe, user-facing reason that draft PR creation was refused."""
+
+
+def _capture_publish_baseline(project: str) -> str:
+    git = shutil.which("git")
+    if not git:
+        raise PublishError("Git precisa estar instalado para autorizar a publicação.")
+    git = str(Path(git).resolve(strict=True))
+    root = Path(project).resolve(strict=True)
+    env = {"PATH": os.defpath, "GIT_NO_REPLACE_OBJECTS": "1", "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+           "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0"}
+    try:
+        proc = subprocess.run([git, "-c", "core.fsmonitor=false", "-c", "core.untrackedCache=false",
+                               "rev-parse", "HEAD"], cwd=root, env=env, stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                              timeout=20, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        raise PublishError("Não foi possível capturar a base Git antes da tarefa.") from None
+    if proc.returncode or not re.fullmatch(r"[0-9a-f]{40,64}", proc.stdout.strip()):
+        raise PublishError("A tarefa autorizada exige um repositório Git com HEAD válido.")
+    return proc.stdout.strip()
+
+
+def _publish_draft_pr(project: str, baseline: str) -> str:
+    """Validate a completed feature branch and create one deterministic draft PR."""
+    gh = shutil.which("gh")
+    git = shutil.which("git")
+    if not gh or not git:
+        raise PublishError("gh e Git precisam estar instalados para publicar.")
+    # Resolve the trusted executable before entering the project directory.
+    gh = str(Path(gh).resolve(strict=True))
+    git = str(Path(git).resolve(strict=True))
+    root = Path(project).resolve(strict=True)
+    if root != PUBLISH_PROJECT.resolve():
+        raise PublishError("A publicação está restrita ao checkout DEV configurado.")
+    # Build a disposable Git dir from Git's structured views only. Config, refs
+    # expressions, hooks and executables stored beside the project are excluded.
+    with tempfile.TemporaryDirectory(prefix="orquestracao-publish-") as isolated:
+        if (root / ".git").is_symlink():
+            raise PublishError("A publicação exige um Git dir regular no checkout autorizado.")
+        original_gitdir_proc = subprocess.run([git, "-C", str(root), "-c", "core.fsmonitor=false",
+                                              "-c", "core.untrackedCache=false", "rev-parse", "--absolute-git-dir"],
+                                              stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                              stderr=subprocess.DEVNULL, text=True, timeout=20, check=False,
+                                              env={"PATH": os.defpath, "GIT_NO_REPLACE_OBJECTS": "1", "GIT_CONFIG_NOSYSTEM": "1",
+                                                   "GIT_CONFIG_GLOBAL": os.devnull})
+        if original_gitdir_proc.returncode:
+            raise PublishError("A publicação exige um repositório Git.")
+        original_gitdir = Path(original_gitdir_proc.stdout.strip()).resolve(strict=True)
+        if original_gitdir != (root / ".git").resolve(strict=True) or not original_gitdir.is_dir():
+            raise PublishError("A publicação exige o Git dir regular do checkout autorizado.")
+        worktree_proc = subprocess.run([git, "-C", str(root), "-c", "core.fsmonitor=false",
+                                       "-c", "core.untrackedCache=false", "rev-parse", "--show-toplevel"],
+                                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                       stderr=subprocess.DEVNULL, text=True, timeout=20, check=False,
+                                       env={"PATH": os.defpath, "GIT_NO_REPLACE_OBJECTS": "1", "GIT_CONFIG_NOSYSTEM": "1",
+                                            "GIT_CONFIG_GLOBAL": os.devnull})
+        if worktree_proc.returncode or Path(worktree_proc.stdout.strip()).resolve() != root:
+            raise PublishError("A publicação exige o diretório raiz do repositório autorizado.")
+        isolated_gitdir = Path(isolated, "gitdir")
+        isolated_gitdir.mkdir(mode=0o700)
+        env = {"PATH": os.defpath, "HOME": isolated, "XDG_CONFIG_HOME": isolated,
+               "GIT_NO_REPLACE_OBJECTS": "1",
+               "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.path.join(isolated, "gitconfig"),
+               "GIT_CONFIG_SYSTEM": os.devnull, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C", "LANG": "C",
+               "GIT_DIR": str(isolated_gitdir), "GIT_WORK_TREE": str(root), "GIT_OPTIONAL_LOCKS": "0"}
+        empty_config = Path(env["GIT_CONFIG_GLOBAL"])
+        empty_config.touch(mode=0o600)
+
+        try:
+            original_config = Path(str(original_gitdir), "config")
+            if original_gitdir.parent == root:
+                original_config = root / ".git" / "config"
+            lock_dir = Path(tempfile.gettempdir()) / f"orquestracao-publish-{os.getuid()}"
+            lock_dir.mkdir(mode=0o700, exist_ok=True)
+            if not stat.S_ISDIR(lock_dir.lstat().st_mode) or lock_dir.stat().st_uid != os.getuid():
+                raise PublishError("Diretório de lock da publicação não é confiável.")
+            lock_path = lock_dir / "draft-pr.lock"
+            parser = configparser.ConfigParser(interpolation=None, strict=True)
+            parser.read(original_config, encoding="utf-8")
+            for section in parser.sections():
+                if section.lower().startswith("include") or section.lower() == "extensions":
+                    raise PublishError("A configuração local do Git contém includes ou extensões não permitidos.")
+            remote_sections = [section for section in parser.sections() if section.lower().startswith("remote ")]
+            if len(remote_sections) != 1:
+                raise PublishError("O repositório deve ter exatamente um remoto configurado.")
+            remote_section = remote_sections[0]
+            remote_name = (remote_section.split('"', 2)[1] if '"' in remote_section
+                           else remote_section.split(None, 1)[1])
+            if not re.fullmatch(r"[A-Za-z0-9._-]+", remote_name):
+                raise PublishError("Nome de remoto inválido.")
+            remote_settings = parser[remote_section]
+            if (set(remote_settings.keys()) - {"url", "fetch"} or
+                    remote_settings.get("url") != PUBLISH_REMOTE or
+                    (remote_settings.get("fetch") is not None and
+                     remote_settings.get("fetch") != f"+refs/heads/*:refs/remotes/{remote_name}/*")):
+                raise PublishError("O remoto precisa apontar somente para o repositório autorizado.")
+            if parser.defaults():
+                raise PublishError("A configuração local do Git contém opções globais não permitidas.")
+            if any(key.lower() in {"hookspath", "fsmonitor", "gitproxy", "sshcommand", "attributesfile",
+                                   "excludesfile", "worktreeconfig", "objectdirectory", "alternateobjectdirectories",
+                                   "indexfile", "commondir", "worktree"} for section in parser.sections()
+                   for key in parser[section]):
+                raise PublishError("A configuração local do Git contém executáveis ou paths não permitidos.")
+            alternates = original_gitdir / "objects" / "info" / "alternates"
+            http_alternates = original_gitdir / "objects" / "info" / "http-alternates"
+            if alternates.exists() or http_alternates.exists():
+                raise PublishError("Object stores externos não são permitidos para publicação.")
+            for name in ("objects", "refs", "HEAD", "packed-refs", "index"):
+                source = original_gitdir / name
+                if source.is_symlink():
+                    raise PublishError("Links simbólicos no Git dir não são permitidos para publicação.")
+                if source.is_dir():
+                    for directory, dirs, files in os.walk(source, followlinks=False):
+                        for child in [*dirs, *files]:
+                            if (Path(directory) / child).is_symlink():
+                                raise PublishError("Links simbólicos no Git dir não são permitidos para publicação.")
+            for name in ("objects", "refs", "HEAD", "packed-refs", "index"):
+                source = original_gitdir / name
+                target = isolated_gitdir / name
+                if source.is_dir():
+                    shutil.copytree(source, target, symlinks=False)
+                elif source.is_file():
+                    shutil.copy2(source, target)
+            safe_config = ("[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = " +
+                           str(root) + "\n[remote \"" + remote_name + "\"]\n\turl = " + PUBLISH_REMOTE +
+                           "\n[branch \"main\"]\n\tremote = " + remote_name + "\n\tmerge = refs/heads/main\n")
+            (isolated_gitdir / "config").write_text(safe_config, encoding="utf-8")
+            (isolated_gitdir / "hooks").mkdir(mode=0o700)
+            (isolated_gitdir / "commondir").unlink(missing_ok=True)
+        except (OSError, configparser.Error, subprocess.TimeoutExpired):
+            raise PublishError("Não foi possível isolar a configuração e os objetos Git.") from None
+
+        def git_run(*args: str) -> str:
+            proc = subprocess.run([git, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+                                   "-c", "core.untrackedCache=false", *args], cwd=root,
+                                  env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                  stderr=subprocess.DEVNULL, text=True, timeout=20, check=False)
+            if proc.returncode:
+                raise PublishError("Não foi possível validar o repositório Git para publicação.")
+            return proc.stdout.strip()
+
+        try:
+            if git_run("rev-parse", "--is-inside-work-tree") != "true":
+                raise PublishError("A publicação exige um repositório Git.")
+            branch = git_run("symbolic-ref", "--quiet", "--short", "HEAD")
+            if not PUBLISH_BRANCH.fullmatch(branch) or ".." in branch or "//" in branch:
+                raise PublishError("A publicação exige uma branch feat válida e não destacada.")
+            if git_run("status", "--porcelain", "--untracked-files=all"):
+                raise PublishError("O repositório precisa estar limpo antes da publicação.")
+            if not re.fullmatch(r"[0-9a-f]{40,64}", baseline):
+                raise PublishError("Não foi possível validar a base capturada da tarefa.")
+            head = git_run("rev-parse", "HEAD")
+            is_ancestor = subprocess.run([git, "merge-base", "--is-ancestor", baseline, "HEAD"],
+                                         cwd=root, env=env, stdin=subprocess.DEVNULL,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                         timeout=20, check=False)
+            if baseline == head or is_ancestor.returncode != 0:
+                raise PublishError("A branch precisa conter commits novos desde o início da tarefa.")
+            if git_run("rev-list", "--count", f"{baseline}..HEAD") == "0":
+                raise PublishError("A branch precisa conter commits novos desde o início da tarefa.")
+        except (OSError, subprocess.TimeoutExpired):
+            raise PublishError("Não foi possível validar o repositório Git para publicação.") from None
+
+        # gh is invoked directly (never through a shell); it reads only its normal
+        # credential store, with prompts disabled. No user-supplied text is passed.
+        try:
+            gh_env = {key: os.environ[key] for key in ("HOME", "XDG_CONFIG_HOME", "LANG", "LC_ALL")
+                      if key in os.environ}
+            gh_env.update({"PATH": os.defpath, "GIT_NO_REPLACE_OBJECTS": "1",
+                           "GH_PROMPT_DISABLED": "1", "GH_REPO": PUBLISH_REPO,
+                           "GH_NO_UPDATE_NOTIFIER": "1", "GIT_CONFIG_NOSYSTEM": "1",
+                           "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull})
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            lock_file = os.fdopen(lock_fd, "r+")
+            try:
+                fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise PublishError("Já existe uma publicação em andamento.") from None
+            existing = subprocess.run([gh, "pr", "list", "--repo", PUBLISH_REPO,
+                                       "--head", branch, "--json", "url,isDraft,baseRefName"],
+                                      cwd=isolated_gitdir, env={**gh_env, "GIT_DIR": str(isolated_gitdir)}, stdin=subprocess.DEVNULL,
+                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                      timeout=30, check=False)
+            if existing.returncode:
+                raise PublishError("gh não conseguiu validar autenticação, acesso ou PR existente.")
+            try:
+                existing_rows = json.loads(existing.stdout)
+            except (ValueError, TypeError):
+                raise PublishError("gh retornou uma resposta inválida ao verificar PR existente.") from None
+            if not isinstance(existing_rows, list):
+                raise PublishError("gh retornou formato inválido ao verificar PR existente.")
+            existing_url = None
+            if len(existing_rows) > 1:
+                raise PublishError("Há múltiplos PRs para esta branch; publicação interrompida.")
+            if existing_rows:
+                existing_row = existing_rows[0] if isinstance(existing_rows[0], dict) else {}
+                url = existing_row.get("url")
+                if isinstance(url, str) and re.fullmatch(
+                        rf"https://github\.com/{PUBLISH_REPO}/pull/[1-9][0-9]*", url):
+                    if existing_row.get("baseRefName") != "main":
+                        raise PublishError("O PR existente não tem base main; publicação interrompida.")
+                    if existing_row.get("isDraft") is not True:
+                        raise PublishError("Já existe um PR não draft para esta branch; publicação interrompida.")
+                    existing_url = url
+                else:
+                    raise PublishError("gh retornou URL inválida para o PR existente.")
+            helper = shlex.quote(str(Path(gh).resolve(strict=True))) + " auth git-credential"
+            push_env = {**env, "GIT_NO_REPLACE_OBJECTS": "1", "HOME": os.environ.get("HOME", ""),
+                        "XDG_CONFIG_HOME": os.environ.get("XDG_CONFIG_HOME", ""),
+                        "GIT_TERMINAL_PROMPT": "0", "GH_PROMPT_DISABLED": "1",
+                        "GIT_CONFIG_COUNT": "2",
+                        "GIT_CONFIG_KEY_0": "credential.helper", "GIT_CONFIG_VALUE_0": "",
+                        "GIT_CONFIG_KEY_1": "credential.helper", "GIT_CONFIG_VALUE_1": helper}
+            # Push from the sanitized Git dir too. Running this against the original
+            # checkout would re-read its local config (for example core.sshCommand,
+            # url.*.insteadOf, or credential helpers) after validation.
+            push = subprocess.run([git, "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false",
+                                   "push", PUBLISH_REMOTE, f"{head}:refs/heads/{branch}"],
+                                  cwd=isolated_gitdir,
+                                  env={**push_env, "GIT_DIR": str(isolated_gitdir), "GIT_WORK_TREE": str(root)},
+                                  stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                  timeout=60, check=False)
+            if push.returncode:
+                raise PublishError("Não foi possível enviar o commit validado ao remoto autorizado.")
+            if existing_url:
+                lock_file.close()
+                return "Draft PR existente: " + existing_url
+            proc = subprocess.run([gh, "pr", "create", "--repo", PUBLISH_REPO,
+                                  "--base", "main", "--head", branch, "--draft",
+            "--title", "Atualização da branch " + branch,
+                                  "--body", "Atualização da branch " + branch + "."],
+                                 cwd=isolated_gitdir, env={**gh_env, "GIT_DIR": str(isolated_gitdir)}, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                                 timeout=45, check=False)
+        except PublishError:
+            if "lock_file" in locals() and not lock_file.closed:
+                lock_file.close()
+            raise
+        except (OSError, subprocess.TimeoutExpired):
+            if "lock_file" in locals() and not lock_file.closed:
+                lock_file.close()
+            raise PublishError("Não foi possível concluir a criação do Draft PR.") from None
+        if proc.returncode:
+            lock_file.close()
+            raise PublishError("gh não conseguiu criar o Draft PR; verifique autenticação e acesso ao repositório.")
+        viewed = subprocess.run([gh, "pr", "view", "--repo", PUBLISH_REPO, branch, "--json", "url"],
+                                cwd=isolated_gitdir, env={**gh_env, "GIT_DIR": str(isolated_gitdir)},
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True, timeout=30, check=False)
+        if viewed.returncode:
+            lock_file.close()
+            raise PublishError("Draft PR criado, mas não foi possível confirmar sua URL.")
+        try:
+            url = json.loads(viewed.stdout).get("url")
+        except (ValueError, TypeError, AttributeError):
+            url = None
+        if not isinstance(url, str) or not re.fullmatch(rf"https://github\.com/{PUBLISH_REPO}/pull/[1-9][0-9]*", url):
+            lock_file.close()
+            raise PublishError("gh retornou URL inválida para o Draft PR criado.")
+        lock_file.close()
+        return "Draft PR criado: " + url
 
 
 @dataclass
@@ -32,6 +310,12 @@ class Session:
     events: list[tuple[int, str, dict]] = field(default_factory=list)
     next_event: int = 0
     changed: asyncio.Condition = field(default_factory=asyncio.Condition)
+    publish_authorized: bool = False
+    publish_attempted: bool = False
+    publish_result: str = ""
+    publish_baseline: str | None = None
+    publish_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    publish_task: asyncio.Task | None = None
 
     async def emit(self, kind: str, data: dict) -> None:
         async with self.changed:
@@ -45,12 +329,16 @@ class OperationsServer:
     """Small HTTP/SSE adapter. The browser session lives only in process memory."""
     def __init__(self, projects: list[Path], *, codex: str | None = None,
                  process_factory: Callable | None = None, remote_origin: str | None = None,
-                 remote_logins: set[str] | None = None):
+                 remote_logins: set[str] | None = None,
+                 publish_runner: Callable | None = None,
+                 publish_dispatch: Callable | None = None):
         self.projects = tuple(dict.fromkeys(validate_project(p) for p in projects))
         if not self.projects:
             raise ValueError("Informe ao menos um diretório autorizado com --project.")
         self.codex = codex
         self.process_factory = process_factory
+        self.publish_runner = publish_runner or _publish_draft_pr
+        self.publish_dispatch = publish_dispatch or asyncio.to_thread
         if (remote_origin is None) != (remote_logins is None):
             raise ValueError("Configure juntos --remote-origin e --remote-logins-file.")
         if remote_origin is not None and not TAILSCALE_ORIGIN.fullmatch(remote_origin):
@@ -69,6 +357,8 @@ class OperationsServer:
         return self.server.sockets[0].getsockname()[1]
 
     async def close(self) -> None:
+        if self.session.publish_task and not self.session.publish_task.done():
+            await asyncio.gather(self.session.publish_task, return_exceptions=True)
         if self.session.run and self.session.run.state.status not in TERMINAL:
             await self.session.run.cancel()
         if isinstance(self.session.run, AppServerRun):
@@ -169,11 +459,18 @@ class OperationsServer:
                 if path == "/api/run":
                     await self._start_run(payload, writer)
                     return
+                if path == "/api/publish":
+                    await self._publish(writer)
+                    return
                 if path == "/api/message":
                     await self._continue_run(payload, writer)
                     return
                 if path == "/api/cancel":
                     run = self.session.run
+                    if self.session.publish_authorized:
+                        self.session.publish_authorized = False
+                        self.session.publish_attempted = True
+                        self.session.publish_result = "Publicação não realizada: tarefa cancelada."
                     if run and run.state.status not in TERMINAL:
                         await run.cancel()
                     await self._response(writer, 200, b'{"ok":true}', "application/json")
@@ -219,8 +516,18 @@ class OperationsServer:
         if mode not in ("reading", "development"):
             await self._response(writer, 400, "Modo inválido".encode())
             return
+        publish = payload.get("publish_draft_pr", False)
+        if type(publish) is not bool:
+            await self._response(writer, 400, b"Autorizacao de publicacao invalida")
+            return
+        if publish and mode != "development":
+            await self._response(writer, 400, b"Publicacao disponivel somente em Desenvolvimento")
+            return
         if self.session.task and not self.session.task.done():
             await self._response(writer, 409, "Já existe uma execução ativa".encode())
+            return
+        if self.session.publish_lock.locked():
+            await self._response(writer, 409, b"Uma publicacao esta em andamento")
             return
         try:
             engine = payload.get("engine", "exec")
@@ -252,17 +559,69 @@ class OperationsServer:
         except ValueError:
             await self._response(writer, 400, "Não foi possível validar a tarefa ou o diretório".encode())
             return
+        if self.session.publish_lock.locked():
+            await self._response(writer, 409, b"Uma publicacao esta em andamento")
+            return
         if isinstance(self.session.run, AppServerRun):
             await self.session.run.close()
         # Keep the event ID monotonic, but never replay a previous task into a new view.
         self.session.events.clear()
+        publish_baseline = None
+        self.session.publish_result = ""
+        if publish:
+            if Path(project).resolve() != PUBLISH_PROJECT:
+                self.session.publish_result = "Publicação autorizada somente no checkout DEV configurado."
+                publish = False
+            else:
+                try:
+                    publish_baseline = _capture_publish_baseline(project)
+                except PublishError as exc:
+                    self.session.publish_result = str(exc)
+                    publish = False
         self.session.run = run
+        self.session.publish_authorized = publish
+        self.session.publish_attempted = False
+        self.session.publish_baseline = publish_baseline
         self.session.engine = engine
         self.session.task = asyncio.create_task(self._execute(run))
         if engine == "app-server":
             await self.session.emit("message", {"role": "user", "text": prompt})
         await self.session.emit("state", self._snapshot())
         await self._response(writer, 202, b'{"ok":true}', "application/json")
+
+    async def _publish(self, writer: asyncio.StreamWriter) -> None:
+        run = self.session.run
+        if self.session.publish_task is not None:
+            try:
+                result = await self.session.publish_task
+            except Exception:
+                result = self.session.publish_result or "Falha segura ao criar o Draft PR."
+            status = 200 if result.startswith(("Draft PR criado:", "Draft PR existente:")) else 409
+            await self._response(writer, status, json.dumps({"ok": status == 200, "result": result}).encode(), "application/json")
+            return
+        if self.session.publish_attempted:
+            result = self.session.publish_result
+            status = 200 if result.startswith(("Draft PR criado:", "Draft PR existente:")) else 409
+            await self._response(writer, status, json.dumps({"ok": status == 200, "result": result}).encode(), "application/json")
+            return
+        if not self.session.publish_authorized:
+            await self._response(writer, 409, self.session.publish_result.encode() or b"Publicacao nao autorizada")
+            return
+        await self._response(writer, 409, b"Publicacao sera iniciada automaticamente apos a tarefa")
+
+    async def _maybe_publish(self, run: AppServerRun) -> str:
+        try:
+            if not self.session.publish_baseline:
+                raise PublishError("Não foi possível capturar baseline Git antes da tarefa.")
+            async with self.session.publish_lock:
+                result = await self.publish_dispatch(self.publish_runner, run.cwd, self.session.publish_baseline)
+        except PublishError as exc:
+            result = str(exc)
+        except Exception:
+            result = "Falha segura ao criar o Draft PR."
+        self.session.publish_result = result
+        await self.session.emit("state", self._snapshot())
+        return result
 
     async def _execute(self, run: CodexRun) -> None:
         assistant_message_emitted = False
@@ -276,16 +635,39 @@ class OperationsServer:
             if isinstance(run, AppServerRun) and run.state.final and not assistant_message_emitted:
                 await self.session.emit("message", {"role": "assistant", "text": run.state.final})
                 assistant_message_emitted = True
+            if (run.state.status == "completed" and isinstance(run, AppServerRun) and
+                    run.mode == "development" and run.cwd == str(PUBLISH_PROJECT) and
+                    not run.cancel_requested and self.session.run is run and self.session.publish_authorized):
+                self.session.publish_authorized = False
+                self.session.publish_attempted = True
+                self.session.publish_result = "Criando Draft PR…"
+                await self.session.emit("state", self._snapshot())
+                self.session.publish_task = asyncio.create_task(self._maybe_publish(run))
+                try:
+                    await self.session.publish_task
+                finally:
+                    self.session.publish_task = None
+            elif self.session.publish_authorized and run.state.status != "completed":
+                self.session.publish_authorized = False
+                self.session.publish_attempted = True
+                self.session.publish_result = "Publicação não realizada: tarefa não concluiu com sucesso."
             await self.session.emit("state", self._snapshot())
         except Exception:
             await run.cancel()
             run.state.status = "failed"
             run.state.error = "Erro interno ao acompanhar o Codex."
             run.state.finish_timing()
+            if self.session.run is run and self.session.publish_authorized:
+                self.session.publish_authorized = False
+                self.session.publish_attempted = True
+                self.session.publish_result = "Publicação não realizada: tarefa não concluiu com sucesso."
             await self.session.emit("state", self._snapshot())
 
     async def _continue_run(self, payload: dict, writer: asyncio.StreamWriter) -> None:
         run = self.session.run
+        if self.session.publish_lock.locked():
+            await self._response(writer, 409, b"Uma publicacao esta em andamento")
+            return
         prompt = payload.get("prompt")
         if self.session.engine != "app-server" or not isinstance(run, AppServerRun) or not run.thread_id:
             await self._response(writer, 409, b"Nao existe sessao app-server ativa")
@@ -313,6 +695,8 @@ class OperationsServer:
             run.state.escalations.append(run.route_override.reason)
         else:
             run.route_override = None
+        # Publishing approval belongs only to the original task, never a later turn.
+        self.session.publish_authorized = False
         run.prompt = prompt
         run.cancel_requested = False
         run.turn_id = None
@@ -352,7 +736,10 @@ class OperationsServer:
                 "escalations": state.escalations,
                 "thread_id": getattr(run, "thread_id", None), "agents": agents,
                 "mode": getattr(run, "mode", "reading"), "approvals": approvals,
-                "changed_files": sorted(getattr(run, "changed_files", set()))}
+                "changed_files": sorted(getattr(run, "changed_files", set())),
+                "publish_authorized": self.session.publish_authorized,
+                "publish_attempted": self.session.publish_attempted,
+                "publish_result": self.session.publish_result}
 
     async def _stream(self, writer: asyncio.StreamWriter, last_id: int) -> None:
         writer.write(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: keep-alive\r\nX-Content-Type-Options: nosniff\r\n\r\n")

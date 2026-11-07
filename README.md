@@ -28,9 +28,24 @@ humanas únicas ou recusa, conforme suportado. Alterações locais são indicada
 quando confirmadas por eventos de arquivo concluídos. A TUI segue disponível em
 `orchestration_tui.py`.
 
+Em Desenvolvimento, a caixa opcional **Autorizar criação de um Draft PR após
+esta tarefa, uma única vez** autoriza o backend a publicar automaticamente
+quando o turno original termina com sucesso, mesmo que a página seja fechada.
+A ação só está disponível no checkout DEV configurado. Valida árvore limpa,
+branch `feat/*`, remoto HTTPS fixo e commits descendentes do baseline capturado
+antes da tarefa; envia o SHA validado com push explícito e usa `gh` para abrir
+um Draft PR com título e descrição determinísticos. PR draft existente recebe
+os novos commits validados sem criar outro PR. Falta de autenticação ou qualquer
+validação bloqueia a publicação; a autorização não se aplica a mensagens posteriores.
+Para habilitar a publicação, configure o `gh` manualmente no ambiente da conta
+de serviço que executa a central (`gh auth login` e conclua o fluxo interativo).
+A central não inicia login nem grava credenciais; confirme o acesso com
+`gh auth status` antes de usar a opção.
+
 O sandbox do Codex não impõe proibição de push, merge, releases, operações
-destrutivas ou mudanças globais dentro do workspace. A aplicação não publica
-automaticamente; prompts não substituem controles técnicos. Use projetos e
+destrutivas ou mudanças globais dentro do workspace. A publicação de Draft PR
+exige autorização explícita na tarefa. Prompts
+não substituem controles técnicos. Use projetos e
 tarefas autorizados e uma configuração Codex confiável. O token CSRF e o estado
 da única tarefa ficam na memória do processo, que escuta somente `127.0.0.1`.
 
