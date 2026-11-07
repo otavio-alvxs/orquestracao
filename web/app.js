@@ -95,8 +95,25 @@
     const body = document.createElement('p'); body.textContent = text; li.append(label, body); $('conversation').append(li);
   }
   function renderAgents(agents) {
-    const entries = Object.entries(agents || {}); $('agents').classList.toggle('hidden', !entries.length); $('agent-list').replaceChildren();
-    for (const [id, agent] of entries) { const li = document.createElement('li'); li.textContent = `${id} · ${agent.status || 'estado desconhecido'}${agent.model ? ` · ${agent.model}` : ''}${agent.effort ? ` · ${agent.effort}` : ''}`; $('agent-list').append(li); }
+    const entries = Object.entries(agents || {}).filter(([, agent]) => agent.role !== 'Coordenador');
+    const expanded = new Map([...$('agent-list').querySelectorAll('details')].map((node) => [node.dataset.agent, node.open]));
+    $('agents').classList.toggle('hidden', !entries.length); $('agent-list').replaceChildren();
+    const labels = { running: 'Em atividade', completed: 'Concluído', failed: 'Falhou', interrupted: 'Interrompido', shutdown: 'Encerrado', unknown: 'Estado desconhecido' };
+    for (const [id, agent] of entries) {
+      const li = document.createElement('li'), heading = document.createElement('span');
+      const observedName = typeof agent.name === 'string' && agent.name ? agent.name :
+        (id.length > 18 ? `${id.slice(0, 8)}…${id.slice(-6)}` : id);
+      heading.textContent = `${observedName} · ${labels[agent.status] || labels.unknown}`;
+      li.append(heading);
+      const summaryText = agent.result || agent.activity;
+      if (summaryText) { const activity = document.createElement('span'); activity.className = 'agent-activity'; activity.textContent = summaryText; li.append(activity); }
+      if (agent.model || agent.effort) {
+        const technical = document.createElement('details'), summary = document.createElement('summary'), detail = document.createElement('span');
+        technical.className = 'agent-technical'; technical.dataset.agent = id; technical.open = expanded.get(id) || false; summary.textContent = 'Detalhes';
+        detail.textContent = [agent.model, agent.effort].filter(Boolean).join(' · '); technical.append(summary, detail); li.append(technical);
+      }
+      $('agent-list').append(li);
+    }
   }
   async function stream() {
     const response = await fetch('/api/events', { headers: { 'X-CSRF-Token': csrf, 'Last-Event-ID': String(lastId) } });

@@ -2,7 +2,7 @@
 
 Projeto para organizar o uso incremental de agentes, modelos, skills e ferramentas, priorizando funcionalidade, velocidade e economia de recursos.
 
-## Central Web local — v0.12 (Missão 019)
+## Central Web local — v0.13 (Missão 021)
 
 Inicie com Python 3.10+ e Codex CLI já autenticado. Cada diretório autorizado
 deve ser informado na inicialização; sem argumentos, somente o diretório atual
@@ -30,6 +30,34 @@ destrutivas ou mudanças globais dentro do workspace. A aplicação não publica
 automaticamente; prompts não substituem controles técnicos. Use projetos e
 tarefas autorizados e uma configuração Codex confiável. O token CSRF e o estado
 da única tarefa ficam na memória do processo, que escuta somente `127.0.0.1`.
+
+### Colaboração nativa observada
+
+A seção **Agentes** aparece quando eventos estruturados de colaboração chegam
+na thread e no turno ativos. Exibe nome ou ID abreviado, estado e atividade;
+modelo e esforço resolvidos ficam em detalhes recolhíveis. Campos ausentes
+permanecem desconhecidos. A conclusão de uma chamada de ferramenta não significa
+que o especialista terminou. A central acompanha o Codex; a delegação continua
+sob responsabilidade do coordenador, sem scheduler ou permissões adicionais.
+
+O protocolo foi inspecionado no Codex CLI **0.167.0**, incluindo
+`collabAgentToolCall` e `subAgentActivity`. No único piloto real desta missão,
+um POST em `/api/run` iniciou Desenvolvimento em projeto temporário isolado:
+o coordenador delegou uma função Python `clamp` e testes ao Developer e pediu
+revisão independente ao Reviewer. Os eventos observaram os nomes `developer`
+e `reviewer`, com modelos resolvidos `gpt-6-luna`/`low` e
+`gpt-6.1-terra`/`medium`, respectivamente. Ambos passaram de início a conclusão
+no estado fornecido à central; o turno terminou em cerca de 51 segundos. O
+coordenador relatou cinco testes aprovados. O nome observado identifica o
+especialista; não é inferência de papel a partir de TOML.
+
+Nesse piloto, `agentsStates` veio vazio: não houve resumo estruturado individual
+de resultado. O modelo do coordenador também não foi comprovado por esses
+eventos. A evidência foi conferida no estado da central, sem inspeção visual de
+navegador. Eventos sem informação de ordem recebem tratamento conservador;
+a aplicação não consulta históricos privados para completar metadados. Uma
+retomada solicitada não apaga o último estado terminal sem um novo início
+observado com ordem verificável.
 
 ### Acesso remoto privado opcional — Tailscale Serve
 
