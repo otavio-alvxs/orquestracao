@@ -30,6 +30,7 @@ class AppServerRun:
     _notifications: asyncio.Queue = field(default_factory=asyncio.Queue)
     _next_id: int = 0
     _closed: bool = False
+    _failure_message: str = "Não foi possível acompanhar o Codex app-server."
     cancel_requested: bool = False
     _message_parts: dict[str, str] = field(default_factory=dict)
     pending_approvals: dict[str, dict] = field(default_factory=dict)
@@ -231,28 +232,32 @@ class AppServerRun:
             await self._write_response({"id": request["id"], "result": {"decision": "decline"}})
 
     async def _start(self):
+        self._failure_message = "Não foi possível criar o processo Codex app-server."
         executable = self.codex or shutil.which("codex")
         if not executable:
             raise ValueError("Codex CLI não encontrado no PATH.")
         self.process = await self.process_factory(executable, "app-server", "--listen", "stdio://", cwd=self.cwd,
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
+        self._failure_message = "Não foi possível inicializar a conexão RPC com o Codex app-server."
         self._reader = asyncio.create_task(self._read())
         await self._rpc("initialize", {"clientInfo": {"name": "orquestracao-web", "title": "Orquestração Web", "version": "0.14"}})
         if self.cancel_requested:
             return
         self.process.stdin.write(b'{"method":"initialized","params":{}}\n')
         await self.process.stdin.drain()
+        self._failure_message = "Não foi possível criar a thread do Codex app-server."
         sandbox = "workspace-write" if self.mode == "development" else "read-only"
         result = await self._rpc("thread/start", {"cwd": self.cwd, "sandbox": sandbox, "ephemeral": True,
             "approvalPolicy": "on-request", "approvalsReviewer": "user"})
         self.thread_id = result.get("thread", {}).get("id")
-        if not self.thread_id:
+        if not isinstance(self.thread_id, str) or not self.thread_id:
             raise RuntimeError("Codex não retornou a identificação da sessão.")
         if self.cancel_requested:
             return
 
     async def events(self):
+        self._failure_message = "Não foi possível acompanhar o Codex app-server."
         self.state.started_at = time.monotonic()
         self.state.duration_seconds = None
         self.state.status = "starting"
@@ -291,11 +296,15 @@ class AppServerRun:
             self.state.turn_completed = False
             sandbox_policy = ({"type": "workspaceWrite", "networkAccess": False, "writableRoots": [self.cwd]}
                               if self.mode == "development" else {"type": "readOnly", "networkAccess": False})
+            self._failure_message = "Não foi possível iniciar o turno do Codex app-server."
             result = await self._rpc("turn/start", {"threadId": self.thread_id, "input": [{"type": "text", "text": self.prompt}],
                 "model": self.route.model, "effort": self.route.effort,
                 "sandboxPolicy": sandbox_policy, "approvalPolicy": "on-request",
                 "approvalsReviewer": "user"})
             self.turn_id = result.get("turn", {}).get("id")
+            if not isinstance(self.turn_id, str) or not self.turn_id:
+                raise RuntimeError("Codex não retornou a identificação do turno.")
+            self._failure_message = "Não foi possível acompanhar o Codex app-server."
             early, self._early_requests = self._early_requests, []
             for request in early:
                 await self._approval_request(request["id"], request["method"], request["params"])
@@ -391,7 +400,7 @@ class AppServerRun:
         except Exception:
             await self.invalidate_approvals()
             self.state.status = "failed"
-            self.state.error = "Não foi possível iniciar ou acompanhar o Codex app-server."
+            self.state.error = self._failure_message
             self.state.finish_timing()
             yield self.state.error
 

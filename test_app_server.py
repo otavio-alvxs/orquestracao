@@ -59,6 +59,58 @@ class AppServerTests(unittest.IsolatedAsyncioTestCase):
         self.run = AppServerRun(str(self.root), prompt, process_factory=factory)
         return self.run
 
+    async def test_process_creation_failure_is_safe(self):
+        async def factory(*args, **kwargs):
+            raise OSError("SECRET /private/path credential")
+        self.run = AppServerRun(str(self.root), "SECRET prompt", codex="fake",
+                                process_factory=factory)
+        events = await collect(self.run)
+        self.assertEqual(self.run.state.status, "failed")
+        self.assertEqual(self.run.state.error,
+                         "Não foi possível criar o processo Codex app-server.")
+        self.assertEqual(events[-1], self.run.state.error)
+        self.assertNotIn("SECRET", repr(events))
+
+    async def test_startup_rpc_failures_identify_stage_safely(self):
+        stages = {
+            "initialize": "Não foi possível inicializar a conexão RPC com o Codex app-server.",
+            "thread/start": "Não foi possível criar a thread do Codex app-server.",
+            "turn/start": "Não foi possível iniciar o turno do Codex app-server.",
+        }
+        for stage, expected in stages.items():
+            for failure in ("error", "closed", "malformed"):
+                with self.subTest(stage=stage, failure=failure):
+                    script = r'''import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method'); i=m.get('id')
+ if i is None: continue
+ if method==STAGE:
+  if FAILURE=='closed': break
+  response=({'error':{'message':'SECRET /private/path credential'}} if FAILURE=='error'
+            else {'result':{'thread':None,'turn':{'id':42}}})
+ else:
+  response={'result':{'thread':{'id':'thread-test'},'turn':{'id':'turn-test'}}}
+ print(json.dumps(dict(response,id=i)),flush=True)
+'''
+                    # An initialize result has no required fields; use transport errors there.
+                    if stage == "initialize" and failure == "malformed":
+                        continue
+                    script = "STAGE=" + repr(stage) + "\nFAILURE=" + repr(failure) + "\n" + script
+                    async def factory(*args, **kwargs):
+                        return await asyncio.create_subprocess_exec(
+                            sys.executable, "-u", "-c", script, **kwargs)
+                    self.run = AppServerRun(str(self.root), "SECRET prompt", codex="fake",
+                                            process_factory=factory)
+                    try:
+                        events = await asyncio.wait_for(collect(self.run), 3)
+                        self.assertEqual(self.run.state.status, "failed")
+                        self.assertEqual(self.run.state.error, expected)
+                        self.assertEqual(events[-1], expected)
+                        self.assertNotIn("SECRET", repr(events))
+                    finally:
+                        await self.run.close()
+                        self.run = None
+
     async def test_handshake_ephemeral_thread_stream_and_same_thread_continuation(self):
         run = await self.make_run(" first ")
         await asyncio.wait_for(asyncio.gather(*(collect(run) for _ in [0])), 3)
