@@ -37,6 +37,8 @@
         <div class="form-footer"><span id="mode-hint" class="hint">A execução não altera arquivos.</span><button id="start" class="primary"><span class="play">▶</span> Iniciar tarefa <kbd>⌘ ↵</kbd></button></div>
       </div>
       <div class="field task-field"><label for="engine">EXECUTOR</label><div class="select-wrap"><select id="engine"><option value="app-server">Codex app-server · sessão contínua</option><option value="exec">codex exec · execução isolada</option></select></div></div>
+      <div class="field task-field"><label for="profile">ESTRATÉGIA</label><div class="select-wrap"><select id="profile"><option value="auto">Automática</option><option value="simple">Simples · Luna/low</option><option value="intermediate">Intermediária · Luna/medium</option><option value="complex">Complexa · Sol/medium</option></select></div></div>
+      <p class="hint">A rota automática usa Luna/low para pedidos curtos reconhecíveis, Luna/medium para escopo moderado e Sol/medium para tarefas amplas ou risco técnico elevado. Revise a escolha quando necessário.</p>
     </section>
 
     <section id="execution" class="execution hidden" aria-live="polite">
@@ -49,6 +51,8 @@
       <div id="changed-files" class="changed-files hidden"></div>
       <ol id="conversation" class="conversation" aria-label="Conversa atual"></ol>
       <div id="composer" class="composer hidden"><textarea id="message" maxlength="16000" placeholder="Enviar uma mensagem nesta sessão…"></textarea><button id="send-message" class="primary">Enviar</button></div>
+      <div id="escalation" class="composer hidden"><textarea id="escalation-reason" maxlength="1000" placeholder="Motivo para elevar o modelo neste próximo turno"></textarea><button id="escalate" class="primary">Escalonar próximo turno</button></div>
+      <p id="route-info" class="hint"></p>
       <section id="agents" class="agents hidden" aria-live="polite"><strong>Agentes</strong><ul id="agent-list"></ul></section>
       <div id="result-panel" class="result-panel hidden"><div class="result-title"><span>RESULTADO</span><span id="tokens"></span></div><pre id="result"></pre></div>
       <div id="error" class="error hidden"></div>

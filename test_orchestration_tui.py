@@ -39,11 +39,12 @@ class UiTests(unittest.IsolatedAsyncioTestCase):
                 app = OrchestrationApp(root)
                 with patch('orchestration_tui.CodexRun', side_effect=lambda cwd, task: controlled_run(cwd, SUCCESS + suffix, task)):
                     async with app.run_test(size=(120, 36)) as pilot:
-                        app.query_one('#task', TextArea).load_text('analise')
+                        app.query_one('#task', TextArea).load_text('  analise  ')
                         # Drive the same keyboard shortcut available in the terminal.
                         await pilot.press('f5')
                         await asyncio.wait_for(app.run_task, 5)
                         self.assertEqual(app.current_run.state.status, expected)
+                        self.assertEqual(app.current_run.prompt, '  analise  ')
                         self.assertIn('resultado', app.query_one('#result', TextArea).text)
                         summary = str(app.query_one('#status', Static).render())
                         self.assertIn('duração', summary)

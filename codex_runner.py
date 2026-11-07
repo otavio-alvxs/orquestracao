@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import AsyncIterator, Callable
+from task_routing import Route, select_route
 
 MAX_EVENT_BYTES = 4 * 1024 * 1024
 
@@ -27,6 +28,14 @@ class RunState:
     input_tokens: int | None = None
     output_tokens: int | None = None
     cached_input_tokens: int | None = None
+    requested_model: str | None = None
+    requested_effort: str | None = None
+    route_profile: str | None = None
+    route_reason: str | None = None
+    observed_model: str | None = None
+    observed_effort: str | None = None
+    observed_route_reason: str | None = None
+    escalations: list[str] = field(default_factory=list)
 
     def finish_timing(self) -> None:
         if self.started_at is not None and self.duration_seconds is None:
@@ -46,7 +55,8 @@ def validate_project(path: str | Path) -> Path:
         raise ValueError("Selecione um diretório existente e acessível.") from exc
 
 
-def build_command(cwd: str | Path, codex: str | None = None, *, approvals_reviewer: str | None = None) -> list[str]:
+def build_command(cwd: str | Path, codex: str | None = None, *, approvals_reviewer: str | None = None,
+                  route: Route | None = None) -> list[str]:
     project = validate_project(cwd)
     executable = codex or shutil.which("codex")
     if not executable:
@@ -56,6 +66,8 @@ def build_command(cwd: str | Path, codex: str | None = None, *, approvals_review
         if approvals_reviewer != "user":
             raise ValueError("Revisor de aprovações inválido.")
         args.extend(["-c", 'approvals_reviewer="user"'])
+    route = route or select_route("")
+    args.extend(["-m", route.model, "-c", f'model_reasoning_effort="{route.effort}"'])
     return [*args, "exec", "--json", "--ephemeral",
             "--sandbox", "read-only", "--cd", str(project), "-"]
 
@@ -113,13 +125,18 @@ class CodexRun:
     """One process group, with bounded event buffers and deterministic shutdown."""
     def __init__(self, cwd: str | Path, prompt: str, *, codex: str | None = None,
                  process_factory: Callable = asyncio.create_subprocess_exec,
-                 approvals_reviewer: str | None = None):
+                 approvals_reviewer: str | None = None, route: Route | None = None):
         self.cwd = validate_project(cwd)
-        self.prompt = prompt.strip()
-        self.command = build_command(self.cwd, codex, approvals_reviewer=approvals_reviewer)
+        self.prompt = prompt
+        self.route = route or select_route(prompt)
+        self.command = build_command(self.cwd, codex, approvals_reviewer=approvals_reviewer, route=self.route)
         self.process_factory = process_factory
         self.process: asyncio.subprocess.Process | None = None
         self.state = RunState()
+        self.state.requested_model = self.route.model
+        self.state.requested_effort = self.route.effort
+        self.state.route_profile = self.route.profile
+        self.state.route_reason = self.route.reason
         self._cancel_requested = False
         self._spawn_task: asyncio.Task | None = None
         self._stderr_task: asyncio.Task | None = None
@@ -134,7 +151,7 @@ class CodexRun:
             self.state.status = "interrupted"
             self.state.finish_timing()
             return
-        if not self.prompt:
+        if not self.prompt.strip():
             self.state.status = "failed"
             self.state.error = "Escreva uma tarefa antes de iniciar."
             self.state.finish_timing()

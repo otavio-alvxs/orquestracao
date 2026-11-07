@@ -2,7 +2,7 @@
   const csrf = document.querySelector('meta[name="csrf-token"]').content;
   const projects = JSON.parse(document.querySelector('meta[name="projects"]').content);
   const $ = (id) => document.getElementById(id);
-  const project = $('project'), prompt = $('prompt'), start = $('start'), mode = $('mode');
+  const project = $('project'), prompt = $('prompt'), start = $('start'), mode = $('mode'), profile = $('profile');
   const statusText = { idle: 'Aguardando', starting: 'Preparando execução', running: 'Em andamento', completed: 'Concluída', failed: 'Falhou', interrupted: 'Cancelada' };
   let lastId = 0, active = false, clock;
   projects.forEach((path) => { const option = document.createElement('option'); option.value = path; option.textContent = path; project.append(option); });
@@ -19,6 +19,7 @@
     project.disabled = locked;
     mode.disabled = locked;
     $('engine').disabled = locked || mode.value === 'development';
+    profile.disabled = locked;
   }
   prompt.addEventListener('keydown', (event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') start.click(); });
 
@@ -46,9 +47,11 @@
     $('error').textContent = state.error || '';
     if (state.thread_id) { $('session-id').textContent = `Sessão ${state.thread_id}`; $('session-id').classList.remove('hidden'); }
     $('composer').classList.toggle('hidden', $('engine').value !== 'app-server' || !['completed','failed','interrupted'].includes(status));
+    $('escalation').classList.toggle('hidden', $('engine').value !== 'app-server' || !['completed','failed'].includes(status));
+    $('route-info').textContent = state.requested_model ? `Solicitado: ${state.requested_model}/${state.requested_effort}${state.observed_model ? ` · rerota observada: ${state.observed_model}${state.observed_route_reason ? ` (${state.observed_route_reason})` : ''}` : ''} · ${state.route_reason || ''}${state.escalations?.length ? ` · Escalonamentos: ${state.escalations.length}` : ''}` : '';
     renderAgents(state.agents);
     const metric = (value) => Number.isInteger(value) ? `${value.toLocaleString('pt-BR')} tokens` : 'tokens indisponíveis';
-    $('tokens').textContent = state.input_tokens == null && state.output_tokens == null ? 'Tokens indisponíveis' : `Entrada ${metric(state.input_tokens)} · saída ${metric(state.output_tokens)}`;
+    $('tokens').textContent = state.input_tokens == null && state.output_tokens == null ? 'Tokens indisponíveis' : `Entrada ${metric(state.input_tokens)} · cache ${metric(state.cached_input_tokens)} · saída ${metric(state.output_tokens)}`;
     if (state.duration_seconds != null) $('elapsed').textContent = `${state.duration_seconds.toFixed(1)} s`;
     if (['completed', 'failed', 'interrupted'].includes(status)) {
       active = false; clearInterval(clock); start.disabled = false; start.innerHTML = '<span class="play">▶</span> Iniciar tarefa <kbd>⌘ ↵</kbd>';
@@ -142,7 +145,7 @@
     }
   }
   start.addEventListener('click', async () => {
-    const task = prompt.value.trim(); if (!task || active) return;
+    const task = prompt.value; if (!task.trim() || active) return;
     $('approval-feedback').textContent = ''; $('approval-feedback').classList.add('hidden');
     active = true; lastId = 0; $('event-list').replaceChildren(); $('event-count').textContent = '0 eventos';
     $('execution').classList.remove('hidden'); $('run-title').textContent = task;
@@ -152,7 +155,7 @@
     start.disabled = true; start.textContent = 'Iniciando…';
     render({ status: 'starting', mode: mode.value });
     try {
-      const response = await api('/api/run', { prompt: task, project: project.value, engine: $('engine').value, mode: mode.value });
+      const response = await api('/api/run', { prompt: task, project: project.value, engine: $('engine').value, mode: mode.value, profile: profile.value });
       if (!response.ok) { const detail = await response.text(); throw new Error(detail || 'Não foi possível iniciar.'); }
       lockSelection(true);
       stream().catch((error) => { if (active) { addEvent(error.message); active = false; render({ status: 'failed', error: error.message }); } });
@@ -167,7 +170,7 @@
     try { await api('/api/cancel', {}); } finally { $('cancel').disabled = false; }
   });
   $('send-message').addEventListener('click', async () => {
-    const text = $('message').value.trim(); if (!text || active) return;
+    const text = $('message').value; if (!text.trim() || active) return;
     active = true; $('message').value = ''; $('send-message').disabled = true;
     try {
       const response = await api('/api/message', { prompt: text });
@@ -176,6 +179,17 @@
       stream().catch((error) => { if (active) { addEvent(error.message); active = false; render({ status: 'failed', error: error.message }); } });
     } catch (error) { active = false; render({ status: 'failed', error: error.message }); }
     finally { $('send-message').disabled = false; }
+  });
+  $('escalate').addEventListener('click', async () => {
+    const text = $('message').value, reason = $('escalation-reason').value;
+    if (!text.trim() || !reason.trim() || active) return;
+    active = true; $('escalate').disabled = true;
+    try {
+      const response = await api('/api/message', { prompt: text, escalate: true, escalation_reason: reason });
+      if (!response.ok) throw new Error((await response.text()) || 'Escalonamento não enviado.');
+      $('message').value = ''; $('escalation-reason').value = ''; render({ status: 'starting' }); stream().catch((error) => { if (active) { addEvent(error.message); active = false; render({ status: 'failed', error: error.message }); } });
+    } catch (error) { active = false; addEvent(error.message); }
+    finally { $('escalate').disabled = false; }
   });
   $('new-task').addEventListener('click', () => {
     prompt.value = ''; prompt.dispatchEvent(new Event('input')); prompt.focus(); $('execution').classList.add('hidden');
