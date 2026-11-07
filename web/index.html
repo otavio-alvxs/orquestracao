@@ -31,7 +31,7 @@
         <div class="select-wrap"><select id="mode"><option value="reading">Leitura · sem alterações</option><option value="development">Desenvolvimento · pode alterar arquivos</option></select></div>
         <p id="mode-help" class="mode-help">Leitura usa sandbox readOnly.</p>
       </div>
-      <label id="publish-option" class="publish-option hidden"><input id="publish-draft-pr" type="checkbox"> Autorizar criação de um Draft PR após esta tarefa, uma única vez</label>
+      <label id="publish-option" class="publish-option hidden"><input id="publish-draft-pr" type="checkbox"> Autorizar criação de um Draft PR após esta tarefa, uma única vez. O Codex precisa criar um commit novo em feat/* e deixar a árvore de trabalho limpa.</label>
       <div class="field task-field">
         <div class="label-line"><label for="prompt">SUA TAREFA</label><span id="char-count">0 / 16.000</span></div>
         <textarea id="prompt" maxlength="16000" placeholder="Ex.: Analise a estrutura do projeto e resuma seus principais componentes…" spellcheck="true"></textarea>

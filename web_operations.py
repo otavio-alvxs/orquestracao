@@ -466,6 +466,9 @@ class OperationsServer:
                     await self._continue_run(payload, writer)
                     return
                 if path == "/api/cancel":
+                    if self.session.publish_task is not None or self.session.publish_lock.locked():
+                        await self._response(writer, 409, "Publicação já iniciada; aguarde o resultado real.".encode())
+                        return
                     run = self.session.run
                     if self.session.publish_authorized:
                         self.session.publish_authorized = False
@@ -641,9 +644,9 @@ class OperationsServer:
                 self.session.publish_authorized = False
                 self.session.publish_attempted = True
                 self.session.publish_result = "Criando Draft PR…"
-                await self.session.emit("state", self._snapshot())
                 self.session.publish_task = asyncio.create_task(self._maybe_publish(run))
                 try:
+                    await self.session.emit("state", self._snapshot())
                     await self.session.publish_task
                 finally:
                     self.session.publish_task = None

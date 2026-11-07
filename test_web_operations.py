@@ -1,6 +1,8 @@
 import asyncio
 import json
 import sys
+import shutil
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -51,6 +53,92 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
         if hasattr(self, "app"):
             await self.app.close()
         self.temp.cleanup()
+
+    def test_publisher_real_git_snapshot_offline(self):
+        git = shutil.which("git")
+        if not git:
+            self.skipTest("Git indisponível")
+        def local_git(*args, **kwargs):
+            return subprocess.run([git, *args], cwd=self.root, check=True,
+                                  capture_output=True, text=True, **kwargs).stdout.strip()
+        local_git("init", "--initial-branch=feat/offline")
+        local_git("config", "user.name", "Offline Test")
+        local_git("config", "user.email", "offline@example.invalid")
+        local_git("remote", "add", "origin", "https://github.com/otavio-alvxs/orquestracao.git")
+        tracked = self.root / "example.txt"
+        tracked.write_text("baseline\n")
+        local_git("add", ".")
+        local_git("commit", "-m", "baseline")
+        baseline = local_git("rev-parse", "HEAD")
+        tracked.write_text("updated\n")
+        local_git("commit", "-am", "update")
+        head = local_git("rev-parse", "HEAD")
+        real_run = subprocess.run
+        network = []
+        def offline_run(args, **kwargs):
+            if args[0] == str(Path(sys.executable).resolve()):
+                network.append("github")
+                self.assertIn("list", args)
+                return SimpleNamespace(returncode=0, stdout=json.dumps([{
+                    "url": "https://github.com/otavio-alvxs/orquestracao/pull/8",
+                    "isDraft": True, "baseRefName": "main"}]))
+            if "push" in args:
+                network.append("push")
+                snapshot = Path(kwargs["env"]["GIT_DIR"])
+                self.assertNotEqual(snapshot, self.root / ".git")
+                self.assertEqual(real_run([git, "rev-parse", "HEAD"], cwd=snapshot,
+                                         env=kwargs["env"], capture_output=True,
+                                         text=True, check=True).stdout.strip(), head)
+                self.assertIn(head + ":refs/heads/feat/offline", args)
+                return SimpleNamespace(returncode=0, stdout="")
+            return real_run(args, **kwargs)
+        with patch("web_operations.PUBLISH_PROJECT", self.root), \
+             patch("web_operations.shutil.which", side_effect=lambda name: git if name == "git" else sys.executable), \
+             patch("web_operations.subprocess.run", side_effect=offline_run):
+            self.assertIn("Draft PR existente", _publish_draft_pr(str(self.root), baseline))
+            self.assertEqual(network, ["github", "push"])
+            network.clear()
+            with self.assertRaisesRegex(PublishError, "commits novos"):
+                _publish_draft_pr(str(self.root), head)
+            tracked.write_text("dirty\n")
+            with self.assertRaisesRegex(PublishError, "limpo"):
+                _publish_draft_pr(str(self.root), baseline)
+            self.assertEqual(network, [])
+        self.assertEqual(local_git("rev-parse", "HEAD"), head)
+
+    async def test_cancel_during_publication_preserves_real_result(self):
+        entered, release = asyncio.Event(), asyncio.Event()
+        async def dispatch(callback, *args):
+            entered.set()
+            await release.wait()
+            return "Draft PR criado: resultado real"
+        self.app = OperationsServer([self.root], publish_dispatch=dispatch)
+        self.port = await self.app.start(0)
+        self.origin = f"http://127.0.0.1:{self.port}"
+        self.auth = {"Origin": self.origin, "X-CSRF-Token": self.app.session.token}
+        run = AppServerRun(str(self.root), "ok", mode="development")
+        async def events():
+            run.state.status = "completed"
+            yield "done"
+        run.events = events
+        run.cancel = AsyncMock()
+        self.app.session.run = run
+        self.app.session.publish_authorized = True
+        self.app.session.publish_baseline = "a" * 40
+        with patch("web_operations.PUBLISH_PROJECT", self.root):
+            self.app.session.task = asyncio.create_task(self.app._execute(run))
+            try:
+                await asyncio.wait_for(entered.wait(), 3)
+                status, _, body = await self.post("/api/cancel", {})
+                self.assertEqual(status, 409)
+                self.assertIn("Publicação já iniciada", body.decode())
+                self.assertEqual(self.app.session.publish_result, "Criando Draft PR…")
+                run.cancel.assert_not_awaited()
+            finally:
+                release.set()
+                await asyncio.wait_for(self.app.session.task, 3)
+        self.assertEqual(self.app.session.publish_result, "Draft PR criado: resultado real")
+        self.assertEqual(run.state.status, "completed")
 
     def test_publisher_pushes_snapshot_and_confirms_pr_url(self):
         (self.root / ".git").mkdir()
@@ -290,6 +378,7 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
         js = (Path(__file__).with_name("web") / "app.js").read_text()
         checkbox = html.split('id="publish-draft-pr"', 1)[1].split(">", 1)[0]
         self.assertNotIn(" checked", checkbox)
+        self.assertIn("O Codex precisa criar um commit novo em feat/* e deixar a árvore de trabalho limpa.", html)
         self.assertIn("if (!dev) $('publish-draft-pr').checked = false;", js)
         self.assertIn("$('publish-draft-pr').checked = false;", js)
 
