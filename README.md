@@ -31,6 +31,59 @@ automaticamente; prompts não substituem controles técnicos. Use projetos e
 tarefas autorizados e uma configuração Codex confiável. O token CSRF e o estado
 da única tarefa ficam na memória do processo, que escuta somente `127.0.0.1`.
 
+### Acesso remoto privado opcional — Tailscale Serve
+
+O acesso remoto fica desligado por padrão e exige uma origem e uma allowlist
+locais juntas. Tailscale Serve termina HTTPS, encaminha ao backend em loopback
+e fornece `Tailscale-User-Login`; o backend exige login autorizado em cada
+requisição. O login precisa pertencer a um dispositivo Tailscale sem tag que
+preserve identidade de usuário. Dispositivos marcados podem não fornecer esse
+login e são rejeitados. O cabeçalho só é aceito para conexões loopback com o
+Host HTTPS exato configurado; processos locais com acesso à máquina continuam
+dentro do limite de confiança local. Logins Unicode são recebidos codificados
+como RFC 2047 pelo Serve e comparados após decodificação.
+
+Descubra o nome DNS do servidor com `tailscale status` (ou `tailscale status
+--json`) e use o hostname de máquina completo terminado em `ts.net`. Configure
+um arquivo local, fora do Git, com um login Tailscale autorizado por linha:
+
+```sh
+mkdir -p "$HOME/.config/orquestracao"
+remote_logins="$HOME/.config/orquestracao/remote-logins.txt"
+(umask 077; test -e "$remote_logins" || : > "$remote_logins")
+${EDITOR:-nano} "$remote_logins"  # um login autorizado por linha
+python3 web_operations.py --project /caminho/do/projeto \
+  --remote-origin https://dispositivo.tailnet.ts.net \
+  --remote-logins-file "$remote_logins"
+```
+
+Antes de ativar Serve, confira a configuração existente sem substituí-la com
+`tailscale serve status --json`. O comando abaixo
+adiciona o proxy HTTPS de loopback; confira primeiro se o mesmo host/porta já
+tem configuração, pois o Serve é compartilhado com outros serviços:
+
+```sh
+tailscale serve --bg http://127.0.0.1:8765
+```
+
+Restrinja o acesso ao dispositivo servidor nas políticas ACL/grants da tailnet
+para os usuários ou grupos necessários. Confira `tailscale funnel status` e
+garanta que a central não aparece como Funnel; não use `tailscale funnel`.
+Para desabilitar a aplicação remota, reinicie o backend sem os dois argumentos
+`--remote-*`; ele continuará disponível localmente. Para remover o proxy Serve,
+inspecione a configuração e remova somente a rota da central, preservando
+outros handlers existentes. Se a central for a única rota HTTPS na porta 443,
+`tailscale serve --https=443 off` a desativa.
+
+Teste `http://127.0.0.1:8765` no Arch e a URL HTTPS `https://dispositivo.tailnet.ts.net`
+em outro dispositivo autorizado. Streaming, APIs e aprovações usam a mesma
+sessão única do servidor. Os testes HTTP sintéticos cobrem identidade, origem,
+Host, SSE e permissões; não houve smoke remoto porque não foi fornecida uma
+allowlist local autorizada. O Serve preserva o `Host` recebido no proxy HTTP,
+remove/recria os cabeçalhos de identidade e não fornece login de usuário em
+conexões Funnel, que são rejeitadas. Referências: [documentação Serve](https://tailscale.com/docs/features/tailscale-serve)
+e [implementação v1.104.4](https://github.com/tailscale/tailscale/blob/v1.104.4/ipn/ipnlocal/serve.go).
+
 ## TUI funcional — v0.7 (Missão 014)
 
 A interface inicia um processo real do Codex no projeto escolhido, acompanha

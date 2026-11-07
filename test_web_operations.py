@@ -77,6 +77,119 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await http(self.port, "GET", "/api/events", {"X-CSRF-Token": self.app.session.token, "Sec-Fetch-Site": "cross-site"}))[0], 403)
         self.assertEqual((await http(self.port, "GET", "/api/events", {"Origin": "http://evil.test", "X-CSRF-Token": self.app.session.token}))[0], 403)
 
+    async def test_remote_origin_requires_serve_identity_for_every_route(self):
+        script = r'''import json,sys
+def send(value): print(json.dumps(value), flush=True)
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method'); i=m.get('id'); p=m.get('params',{})
+ if method=='initialize': send({'id':i,'result':{}})
+ elif method=='thread/start':
+  assert p['sandbox']=='workspace-write' and p['approvalPolicy']=='on-request'
+  send({'id':i,'result':{'thread':{'id':'remote-thread'}}})
+ elif method=='turn/start':
+  assert p['sandboxPolicy']['type']=='workspaceWrite' and p['sandboxPolicy']['networkAccess'] is False
+  assert p['approvalPolicy']=='on-request'
+  send({'id':i,'result':{'turn':{'id':'remote-turn'}}})
+  send({'method':'turn/completed','params':{'threadId':'remote-thread','turn':{'id':'remote-turn','status':'completed'}}})
+'''
+        async def factory(*args, **kwargs):
+            return await asyncio.create_subprocess_exec(sys.executable, "-u", "-c", script, **kwargs)
+        self.app = OperationsServer([self.root], process_factory=factory,
+                                    remote_origin="https://device.tailnet.ts.net",
+                                    remote_logins={"operator@example.com", "usuário@example.com"})
+        self.port = await self.app.start(0)
+        host = "device.tailnet.ts.net"
+        remote = {"Host": host, "Tailscale-User-Login": "operator@example.com"}
+        # Local access remains enabled, while proxy headers cannot be smuggled through it.
+        self.assertEqual((await http(self.port, "GET", "/"))[0], 200)
+        for path in ("/", "/app.js", "/api/status", "/api/events"):
+            with self.subTest(path=path):
+                self.assertEqual((await http(self.port, "GET", path, {"Host": host}))[0], 403)
+                denied = await http(self.port, "GET", path, {
+                    **remote, "Tailscale-User-Login": "intruder@example.com",
+                    "X-CSRF-Token": self.app.session.token,
+                })
+                self.assertEqual(denied[0], 403)
+                self.assertNotIn(self.app.session.token.encode(), denied[2])
+                self.assertNotIn(str(self.root).encode(), denied[2])
+        self.assertEqual((await http(self.port, "GET", "/", {
+            "Host": "127.0.0.1", "Tailscale-User-Login": "operator@example.com",
+        }))[0], 403)
+        self.assertEqual((await http(self.port, "GET", "/", {
+            "Host": "127.0.0.1", "X-Forwarded-Proto": "https",
+        }))[0], 403)
+        self.assertEqual((await http(self.port, "GET", "/", {
+            **remote, "X-Forwarded-Host": host,
+        }))[0], 200)
+        self.assertEqual((await http(self.port, "GET", "/", {
+            **remote, "Tailscale-Funnel-Request": "?1",
+        }))[0], 403)
+        self.assertEqual((await http(self.port, "GET", "/", {
+            **remote, "Origin": "https://attacker.ts.net",
+        }))[0], 403)
+        self.assertEqual((await http(self.port, "GET", "/api/events", {
+            **remote, "X-CSRF-Token": self.app.session.token, "Origin": "https://device.tailnet.ts.net",
+            "Sec-Fetch-Site": "none",
+        }))[0], 403)
+        self.assertEqual((await http(self.port, "GET", "/api/status", {
+            **remote, "X-CSRF-Token": self.app.session.token,
+        }))[0], 200)
+        for path in ("/", "/app.css", "/api/status"):
+            self.assertEqual((await http(self.port, "GET", path, {
+                **remote, "Origin": "https://device.tailnet.ts.net", "Sec-Fetch-Site": "cross-site",
+                "X-CSRF-Token": self.app.session.token,
+            }))[0], 403)
+        self.assertEqual((await http(self.port, "GET", "/", {
+            "Host": host, "Tailscale-User-Login": "=?utf-8?q?usu=C3=A1rio?=@example.com",
+        }))[0], 200)
+        self.assertEqual((await self.post("/api/approval", {"request_id": "approval", "decision": "accept"}, {
+            "Host": host, "Origin": "https://device.tailnet.ts.net",
+            "Tailscale-User-Login": "intruder@example.com", "X-CSRF-Token": self.app.session.token,
+        }))[0], 403)
+        self.assertEqual((await self.post("/api/approval", {"request_id": "approval", "decision": "accept"}, {
+            "Host": host, "Origin": "https://device.tailnet.ts.net",
+            "X-CSRF-Token": self.app.session.token,
+        }))[0], 403)
+        self.assertEqual((await self.post("/api/run", {
+            "prompt": "Analyze", "project": str(self.root), "mode": "development",
+        }, {"Host": host, "Origin": "https://wrong.ts.net",
+            "Tailscale-User-Login": "operator@example.com", "X-CSRF-Token": self.app.session.token,
+            "Content-Type": "application/json"}))[0], 403)
+        self.assertEqual((await self.post("/api/run", {
+            "prompt": "Analyze", "project": str(self.root), "engine": "app-server", "mode": "development",
+        }, {"Host": host, "Origin": "https://device.tailnet.ts.net",
+            "Tailscale-User-Login": "operator@example.com", "X-CSRF-Token": self.app.session.token,
+            "Content-Type": "application/json", "Sec-Fetch-Site": "same-origin"}))[0], 202)
+        await asyncio.wait_for(self.app.session.task, 3)
+        self.assertEqual(self.app.session.run.mode, "development")
+        self.assertEqual(self.app.session.run.state.status, "completed")
+        status, headers, events = await http(self.port, "GET", "/api/events", {
+            **remote, "Origin": "https://device.tailnet.ts.net",
+            "X-CSRF-Token": self.app.session.token, "Sec-Fetch-Site": "same-origin",
+        })
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["content-type"], "text/event-stream")
+        self.assertIn(b"event: state", events)
+
+    async def test_remote_origin_is_disabled_without_explicit_configuration(self):
+        self.app = OperationsServer([self.root])
+        self.port = await self.app.start(0)
+        self.assertEqual((await http(self.port, "GET", "/"))[0], 200)
+        denied = await http(self.port, "GET", "/", {
+            "Host": "device.tailnet.ts.net", "Tailscale-User-Login": "operator@example.com",
+        })
+        self.assertEqual(denied[0], 403)
+        self.assertNotIn(self.app.session.token.encode(), denied[2])
+
+    def test_remote_configuration_is_strict_and_paired(self):
+        with self.assertRaises(ValueError):
+            OperationsServer([self.root], remote_origin="https://device.tailnet.ts.net")
+        for origin in ("http://device.tailnet.ts.net", "https://*.tailnet.ts.net",
+                       "https://device.tailnet.ts.net/path", "https://device.example.com",
+                       "https://a.b.c.ts.net", "https://user@device.tailnet.ts.net"):
+            with self.subTest(origin=origin), self.assertRaises(ValueError):
+                OperationsServer([self.root], remote_origin=origin, remote_logins={"operator@example.com"})
+
     async def test_create_stream_result_duration_and_tokens(self):
         await self.app_start(SUCCESS)
         status, _, _ = await self.post("/api/run", {"prompt": "Analise", "project": str(self.root)})
