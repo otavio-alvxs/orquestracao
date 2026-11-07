@@ -22,6 +22,8 @@ for line in sys.stdin:
   assert approval=={'id':'approval-1','result':{'decision':'decline'}}
   print(json.dumps({'id':i,'result':{'thread':{'id':'thr-synthetic'}}}),flush=True)
  elif method=='turn/start':
+  assert m['params']['model'] in ('gpt-6-luna','gpt-6.1-sol') and m['params']['effort'] in ('low','medium','high')
+  assert isinstance(m['params']['input'][0]['text'],str)
   turns+=1; tid='turn-'+str(turns)
   print(json.dumps({'id':i,'result':{'turn':{'id':tid}}}),flush=True)
   text='answer-'+str(turns)
@@ -32,6 +34,8 @@ for line in sys.stdin:
   print(json.dumps({'method':'item/agentMessage/delta','params':{'threadId':'thr-synthetic','turnId':tid,'itemId':'msg-final','delta':text}}),flush=True)
   print(json.dumps({'method':'item/completed','params':{'threadId':'thr-synthetic','turnId':tid,'item':{'id':'msg-final','type':'agentMessage','text':text}}}),flush=True)
   if turns == 1: print(json.dumps({'method':'item/completed','params':{'threadId':'thr-synthetic','turnId':tid,'item':{'type':'collabAgentToolCall','senderThreadId':'thr-synthetic','id':'call-1','tool':'spawnAgent','receiverThreadIds':['agent-real'],'agentsStates':{'agent-real':{'status':'completed'}},'model':'model-real','reasoningEffort':'high'}}}),flush=True)
+  for total in ([10,20] if turns == 1 else [23,24]):
+   print(json.dumps({'method':'thread/tokenUsage/updated','params':{'threadId':'thr-synthetic','turnId':tid,'tokenUsage':{'total':{'inputTokens':total,'outputTokens':total,'cachedInputTokens':total}}}}),flush=True)
   print(json.dumps({'method':'turn/completed','params':{'threadId':'thr-synthetic','turn':{'id':tid,'status':'completed'}}}),flush=True)
  elif method=='turn/interrupt':
   print(json.dumps({'id':i,'result':{}}),flush=True)
@@ -56,17 +60,21 @@ class AppServerTests(unittest.IsolatedAsyncioTestCase):
         return self.run
 
     async def test_handshake_ephemeral_thread_stream_and_same_thread_continuation(self):
-        run = await self.make_run("first")
+        run = await self.make_run(" first ")
         await asyncio.wait_for(asyncio.gather(*(collect(run) for _ in [0])), 3)
+        self.assertEqual(run.prompt, " first ")
         self.assertEqual(run.thread_id, "thr-synthetic")
         self.assertEqual(run.state.final, "commentary\n\nanswer-1")
+        self.assertEqual((run.state.input_tokens, run.state.output_tokens, run.state.cached_input_tokens), (20, 20, 20))
         # The collab call reports requested model/effort; these are not execution telemetry.
         self.assertEqual(run.state.agents["agent-real"], {"status": "completed"})
         first_started = run.state.started_at
-        run.prompt = "second"
+        run.prompt = " second "
         await asyncio.wait_for(collect(run), 3)
+        self.assertEqual(run.prompt, " second ")
         self.assertEqual(run.thread_id, "thr-synthetic")
         self.assertEqual(run.state.final, "commentary\n\nanswer-2")
+        self.assertEqual((run.state.input_tokens, run.state.output_tokens, run.state.cached_input_tokens), (4, 4, 4))
         self.assertEqual(run.state.agents, {})
         self.assertGreater(run.state.started_at, first_started)
 
@@ -76,6 +84,21 @@ class AppServerTests(unittest.IsolatedAsyncioTestCase):
         events = await asyncio.wait_for(collect(run), 3)
         self.assertEqual(events.count("item/agentMessage/delta"), 2)
         self.assertEqual(run.state.status, "completed")
+
+    async def test_usage_regression_and_unknown_baseline_are_unavailable(self):
+        run = await self.make_run("Inspect")
+        run.usage_baseline = (0, 0, 0)
+        run._apply_usage_total({"inputTokens": 100, "outputTokens": 100, "cachedInputTokens": 10})
+        self.assertEqual(run.state.input_tokens, 100)
+        run._apply_usage_total({"inputTokens": 90, "outputTokens": 110, "cachedInputTokens": 9})
+        self.assertEqual((run.state.input_tokens, run.state.output_tokens, run.state.cached_input_tokens), (None, None, None))
+        run.usage_baseline = None
+        run.usage_regressed = False
+        run._apply_usage_total({"inputTokens": 110, "outputTokens": 110, "cachedInputTokens": 11})
+        run._apply_usage_total(None)
+        self.assertFalse(run._usage_turn_had_event)
+        run._apply_usage_total({"inputTokens": 120, "outputTokens": 120, "cachedInputTokens": 12})
+        self.assertEqual((run.state.input_tokens, run.state.output_tokens, run.state.cached_input_tokens), (None, None, None))
 
     async def test_collaboration_activity_uses_resolved_metadata_and_terminal_state(self):
         run = await self.make_run("first")
@@ -231,7 +254,7 @@ for line in sys.stdin:
         self.assertEqual(AppServerRun._safe_request_response("mcpServer/elicitation/request"), {"action": "decline", "content": None})
         self.assertEqual(AppServerRun._safe_request_response("tool/requestUserInput"), {"answers": {}})
         self.assertIsNone(AppServerRun._safe_request_response("unknown/method"))
-        self.assertEqual(build_command(self.root, "codex"), ["codex", "-a", "on-request", "exec", "--json", "--ephemeral", "--sandbox", "read-only", "--cd", str(self.root), "-"])
+        self.assertEqual(build_command(self.root, "codex"), ["codex", "-a", "on-request", "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="medium"', "exec", "--json", "--ephemeral", "--sandbox", "read-only", "--cd", str(self.root), "-"])
 
     async def test_development_mode_uses_restricted_workspace_and_one_shot_approvals(self):
         script = r'''import json,sys

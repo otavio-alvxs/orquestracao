@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from codex_runner import RunState, validate_project
+from task_routing import Route, select_route, escalate_route
 
 
 @dataclass
@@ -17,6 +18,7 @@ class AppServerRun:
     cwd: str
     prompt: str
     mode: str = "reading"
+    profile: str = "auto"
     codex: str | None = None
     process_factory: Callable = asyncio.create_subprocess_exec
     process: asyncio.subprocess.Process | None = None
@@ -43,11 +45,23 @@ class AppServerRun:
     _agent_activity_time: dict[str, int] = field(default_factory=dict)
     _agent_terminal_time: dict[str, int | None] = field(default_factory=dict)
     _collab_call_ids: set[str] = field(default_factory=set)
+    route: Route | None = None
+    route_override: Route | None = None
+    usage_baseline: tuple[int, int, int] | None = None
+    usage_total: tuple[int, int, int] | None = None
+    usage_regressed: bool = False
+    turn_count: int = 0
+    _usage_turn_had_event: bool = False
 
     def __post_init__(self):
         self.cwd = str(validate_project(self.cwd))
         if self.mode not in ("reading", "development"):
             raise ValueError("Modo de execução inválido.")
+        self.route = select_route(self.prompt, self.profile)
+        self.state.requested_model = self.route.model
+        self.state.requested_effort = self.route.effort
+        self.state.route_profile = self.route.profile
+        self.state.route_reason = self.route.reason
 
     async def _rpc(self, method: str, params: dict | None = None, *, timeout: float = 30):
         self._next_id += 1
@@ -224,7 +238,7 @@ class AppServerRun:
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL, start_new_session=True)
         self._reader = asyncio.create_task(self._read())
-        await self._rpc("initialize", {"clientInfo": {"name": "orquestracao-web", "title": "Orquestração Web", "version": "0.12"}})
+        await self._rpc("initialize", {"clientInfo": {"name": "orquestracao-web", "title": "Orquestração Web", "version": "0.14"}})
         if self.cancel_requested:
             return
         self.process.stdin.write(b'{"method":"initialized","params":{}}\n')
@@ -261,10 +275,24 @@ class AppServerRun:
                 self.state.finish_timing()
                 yield "Turno Codex interrupted."
                 return
+            self.route = self.route_override or select_route(self.prompt, self.profile)
+            self.route_override = None
+            self.state.requested_model = self.route.model
+            self.state.requested_effort = self.route.effort
+            self.state.route_profile = self.route.profile
+            self.state.route_reason = self.route.reason
+            self.state.input_tokens = self.state.output_tokens = self.state.cached_input_tokens = None
+            self.state.observed_model = self.state.observed_effort = self.state.observed_route_reason = None
+            self.usage_baseline = ((0, 0, 0) if self.turn_count == 0 else
+                                   self.usage_total if self._usage_turn_had_event else None)
+            self._usage_turn_had_event = False
+            self.turn_count += 1
+            self.usage_regressed = False
             self.state.turn_completed = False
             sandbox_policy = ({"type": "workspaceWrite", "networkAccess": False, "writableRoots": [self.cwd]}
                               if self.mode == "development" else {"type": "readOnly", "networkAccess": False})
             result = await self._rpc("turn/start", {"threadId": self.thread_id, "input": [{"type": "text", "text": self.prompt}],
+                "model": self.route.model, "effort": self.route.effort,
                 "sandboxPolicy": sandbox_policy, "approvalPolicy": "on-request",
                 "approvalsReviewer": "user"})
             self.turn_id = result.get("turn", {}).get("id")
@@ -284,6 +312,19 @@ class AppServerRun:
                 if event_thread and event_thread != self.thread_id:
                     continue
                 if event_turn and self.turn_id and event_turn != self.turn_id:
+                    continue
+                if method == "thread/tokenUsage/updated":
+                    if event_thread != self.thread_id or event_turn != self.turn_id:
+                        continue
+                    token_usage = params.get("tokenUsage")
+                    usage = token_usage.get("total") if isinstance(token_usage, dict) else None
+                    self._apply_usage_total(usage)
+                    continue
+                if method == "model/rerouted":
+                    if event_thread != self.thread_id or event_turn != self.turn_id:
+                        continue
+                    self.state.observed_model = params.get("toModel") if isinstance(params.get("toModel"), str) else None
+                    self.state.observed_route_reason = str(params.get("reason", "sem motivo informado"))
                     continue
                 event_item = params.get("item")
                 if not self._collaboration_event_matches(event_item, event_thread, event_turn,
@@ -367,6 +408,29 @@ class AppServerRun:
             await self._rpc("turn/interrupt", {"threadId": self.thread_id, "turnId": self.turn_id}, timeout=2)
         except Exception:
             pass
+
+    def _apply_usage_total(self, usage: object) -> None:
+        if not isinstance(usage, dict):
+            self.state.input_tokens = self.state.output_tokens = self.state.cached_input_tokens = None
+            self._usage_turn_had_event = False
+            return
+        values = (usage.get("inputTokens"), usage.get("outputTokens"), usage.get("cachedInputTokens"))
+        if not all(type(value) is int and value >= 0 for value in values):
+            self.state.input_tokens = self.state.output_tokens = self.state.cached_input_tokens = None
+            self._usage_turn_had_event = False
+            return
+        previous = self.usage_total
+        self.usage_total = values
+        self._usage_turn_had_event = True
+        if self.usage_baseline is None:
+            return
+        if ((previous is not None and any(value < prior for value, prior in zip(values, previous))) or
+                any(value < prior for value, prior in zip(values, self.usage_baseline))):
+            self.usage_regressed = True
+            self.state.input_tokens = self.state.output_tokens = self.state.cached_input_tokens = None
+        elif not self.usage_regressed:
+            delta = tuple(value - prior for value, prior in zip(values, self.usage_baseline))
+            self.state.input_tokens, self.state.output_tokens, self.state.cached_input_tokens = delta
 
     def _refresh_final(self):
         self.state.final = "\n\n".join(text for text in self._message_parts.values() if text)

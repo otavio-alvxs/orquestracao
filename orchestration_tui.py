@@ -94,14 +94,14 @@ class OrchestrationApp(App):
     async def action_start(self) -> None:
         if self.run_task and not self.run_task.done():
             return
-        task = self.query_one("#task", TextArea).text.strip()
+        task = self.query_one("#task", TextArea).text
         try:
             self.project = str(validate_project(self.query_one("#project", Input).value))
             self.current_run = CodexRun(self.project, task)
         except ValueError as exc:
             self.notify(str(exc), severity="error")
             return
-        if not task:
+        if not task.strip():
             self.notify("Escreva uma tarefa antes de iniciar.", severity="error")
             return
         self.query_one("#events", RichLog).clear()

@@ -2,7 +2,7 @@
 
 Projeto para organizar o uso incremental de agentes, modelos, skills e ferramentas, priorizando funcionalidade, velocidade e economia de recursos.
 
-## Central Web local — v0.13 (Missão 021)
+## Central Web local — v0.14 (Missão 022)
 
 Inicie com Python 3.10+ e Codex CLI já autenticado. Cada diretório autorizado
 deve ser informado na inicialização; sem argumentos, somente o diretório atual
@@ -30,6 +30,14 @@ destrutivas ou mudanças globais dentro do workspace. A aplicação não publica
 automaticamente; prompts não substituem controles técnicos. Use projetos e
 tarefas autorizados e uma configuração Codex confiável. O token CSRF e o estado
 da única tarefa ficam na memória do processo, que escuta somente `127.0.0.1`.
+
+### Roteamento de modelo e esforço
+
+A central seleciona modelo/esforço por tarefa com regras locais, sem chamada de
+IA para decidir a rota. A escolha fica fixa durante o turno; continuar usa a
+mesma thread. Perfis, limites, métricas e evidência
+da Missão 022 estão em [ROUTING.md](ROUTING.md). A seleção solicitada não é
+apresentada como comprovação do modelo que executou a inferência.
 
 ### Colaboração nativa observada
 
@@ -167,8 +175,9 @@ regras do projeto, sem delegação obrigatória ou garantia de uma árvore compl
 Não se leem históricos privados para preencher o painel. Nesta versão o parser
 reconhece o coordenador; delegações, papéis de filhos, modelos e esforços não são
 extraídos do formato de streaming reconhecido e permanecem indisponíveis. Isso
-não comprova ausência de delegação. Valores configurados e solicitados não são
-consultados nem apresentados como observados.
+não comprova ausência de delegação. Desde a v0.14, modelo/esforço solicitados
+são selecionados pelo roteador e distinguidos dos metadados observados; ver
+[ROUTING.md](ROUTING.md).
 
 Prompts, respostas e eventos permanecem apenas na memória da TUI e não são
 registrados por ela. `--ephemeral` pede ao CLI que não salve rollouts de sessão;

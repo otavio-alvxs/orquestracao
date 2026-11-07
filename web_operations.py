@@ -15,6 +15,7 @@ from typing import Callable
 
 from codex_runner import CodexRun, validate_project
 from app_server import AppServerRun
+from task_routing import select_route, escalate_route
 
 HOST = "127.0.0.1"
 MAX_BODY = 70 * 1024
@@ -229,12 +230,25 @@ class OperationsServer:
             if engine == "exec" and mode != "reading":
                 await self._response(writer, 400, "codex exec está disponível somente no modo Leitura".encode())
                 return
+            if payload.get("escalate"):
+                await self._response(writer, 400, b"O escalonamento s\xc3\xb3 est\xc3\xa1 dispon\xc3\xadvel em uma sess\xc3\xa3o cont\xc3\xadnua")
+                return
             kwargs = {"codex": self.codex}
             if self.process_factory:
                 kwargs["process_factory"] = self.process_factory
             if engine == "exec":
                 kwargs["approvals_reviewer"] = "user"
-            run = AppServerRun(project, prompt, mode=mode, **kwargs) if engine == "app-server" else CodexRun(project, prompt, **kwargs)
+            profile = payload.get("profile", "auto")
+            if not isinstance(profile, str):
+                await self._response(writer, 400, b"Perfil de roteamento inv\xc3\xa1lido")
+                return
+            route = select_route(prompt, profile)
+            if engine == "app-server":
+                run = AppServerRun(project, prompt, mode=mode, profile=profile, **kwargs)
+                run.route_override = route
+                run.state.escalations = [route.reason] if payload.get("escalate") else []
+            else:
+                run = CodexRun(project, prompt, route=route, **kwargs)
         except ValueError:
             await self._response(writer, 400, "Não foi possível validar a tarefa ou o diretório".encode())
             return
@@ -282,7 +296,24 @@ class OperationsServer:
         if self.session.task and not self.session.task.done():
             await self._response(writer, 409, b"Ja existe um turno ativo")
             return
-        run.prompt = prompt.strip()
+        escalation = payload.get("escalate", False)
+        if type(escalation) is not bool:
+            await self._response(writer, 400, "Campo de escalonamento inválido".encode())
+            return
+        if escalation:
+            if run.state.status == "interrupted":
+                await self._response(writer, 409, b"N\xc3\xa3o \xc3\xa9 poss\xc3\xadvel escalonar um turno cancelado")
+                return
+            try:
+                reason = payload.get("escalation_reason")
+                run.route_override = escalate_route(run.route, reason)
+            except ValueError:
+                await self._response(writer, 400, b"Informe o motivo do escalonamento")
+                return
+            run.state.escalations.append(run.route_override.reason)
+        else:
+            run.route_override = None
+        run.prompt = prompt
         run.cancel_requested = False
         run.turn_id = None
         run.state.status = "starting"
@@ -314,6 +345,11 @@ class OperationsServer:
         return {"status": state.status, "result": result, "error": state.error,
                 "duration_seconds": elapsed, "input_tokens": state.input_tokens,
                 "output_tokens": state.output_tokens, "cached_input_tokens": state.cached_input_tokens,
+                "requested_model": state.requested_model, "requested_effort": state.requested_effort,
+                "observed_model": state.observed_model, "observed_effort": state.observed_effort,
+                "observed_route_reason": state.observed_route_reason,
+                "route_profile": state.route_profile, "route_reason": state.route_reason,
+                "escalations": state.escalations,
                 "thread_id": getattr(run, "thread_id", None), "agents": agents,
                 "mode": getattr(run, "mode", "reading"), "approvals": approvals,
                 "changed_files": sorted(getattr(run, "changed_files", set()))}

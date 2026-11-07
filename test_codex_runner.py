@@ -68,10 +68,11 @@ class CommandTests(unittest.TestCase):
     def test_exact_safe_argv_and_directory_validation(self):
         with tempfile.TemporaryDirectory(prefix='project ; ') as root:
             self.assertEqual(build_command(root, '/usr/bin/codex'), [
-                '/usr/bin/codex', '-a', 'on-request', 'exec', '--json', '--ephemeral',
+                '/usr/bin/codex', '-a', 'on-request', '-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="medium"', 'exec', '--json', '--ephemeral',
                 '--sandbox', 'read-only', '--cd', root, '-'])
             self.assertEqual(build_command(root, '/usr/bin/codex', approvals_reviewer='user'), [
                 '/usr/bin/codex', '-a', 'on-request', '-c', 'approvals_reviewer="user"',
+                '-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="medium"',
                 'exec', '--json', '--ephemeral', '--sandbox', 'read-only', '--cd', root, '-'])
             self.assertEqual(validate_project(root), Path(root))
             for value in (Path(root)/'missing', '', '\0', Path(root)/'file'):

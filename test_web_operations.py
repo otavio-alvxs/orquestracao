@@ -78,7 +78,7 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await http(self.port, "GET", "/api/events", {"Origin": "http://evil.test", "X-CSRF-Token": self.app.session.token}))[0], 403)
 
     async def test_remote_origin_requires_serve_identity_for_every_route(self):
-        script = r'''import json,sys
+        script = r'''import json,sys,time
 def send(value): print(json.dumps(value), flush=True)
 for line in sys.stdin:
  m=json.loads(line); method=m.get('method'); i=m.get('id'); p=m.get('params',{})
@@ -208,6 +208,49 @@ for line in sys.stdin:
         self.assertEqual((await self.post("/api/run", {
             "prompt": "alteração", "project": str(self.root), "engine": "exec", "mode": "development",
         }))[0], 400)
+
+    async def test_turn_route_escalation_is_explicit_and_keeps_session(self):
+        script = r'''import json,sys
+def send(value): print(json.dumps(value), flush=True)
+turns=0
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method'); i=m.get('id'); p=m.get('params',{})
+ if method=='initialize': send({'id':i,'result':{}})
+ elif method=='thread/start': send({'id':i,'result':{'thread':{'id':'route-thread'}}})
+ elif method=='turn/start':
+  turns+=1
+  assert p['threadId']=='route-thread' and isinstance(p['input'][0]['text'],str)
+  send({'id':i,'result':{'turn':{'id':'route-turn-'+str(turns)}}})
+  time.sleep(.25)
+  send({'method':'turn/completed','params':{'threadId':'route-thread','turn':{'id':'route-turn-'+str(turns),'status':'completed'}}})
+'''
+        await self.app_start(script)
+        self.assertEqual((await self.post("/api/run", {
+            "prompt": "Resuma", "project": str(self.root), "engine": "app-server", "escalate": True,
+        }))[0], 400)
+        self.assertEqual((await self.post("/api/run", {
+            "prompt": "Resuma", "project": str(self.root), "engine": "app-server",
+        }))[0], 202)
+        self.assertEqual((await self.post("/api/message", {"prompt": "turno concorrente"}))[0], 409)
+        await asyncio.wait_for(self.app.session.task, 3)
+        run = self.app.session.run
+        self.assertEqual((run.state.requested_model, run.state.requested_effort), ("gpt-6-luna", "low"))
+        self.assertEqual((await self.post("/api/message", {
+            "prompt": "mensagem", "escalate": True, "escalation_reason": "   ",
+        }))[0], 400)
+        self.assertEqual((await self.post("/api/message", {
+            "prompt": "  explique a resposta  ", "escalate": True,
+            "escalation_reason": "resposta insuficiente",
+        }))[0], 202)
+        await asyncio.wait_for(self.app.session.task, 3)
+        self.assertEqual(run.thread_id, "route-thread")
+        self.assertEqual(run.prompt, "  explique a resposta  ")
+        self.assertEqual((run.state.requested_model, run.state.requested_effort), ("gpt-6.1-sol", "medium"))
+        self.assertEqual(len(run.state.escalations), 1)
+        run.state.status = "interrupted"
+        self.assertEqual((await self.post("/api/message", {
+            "prompt": "cancelado", "escalate": True, "escalation_reason": "insuficiente",
+        }))[0], 409)
 
     async def test_development_mode_and_native_approval_http_endpoint(self):
         script = r'''import json,sys
