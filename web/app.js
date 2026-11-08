@@ -4,11 +4,13 @@
   const $ = (id) => document.getElementById(id);
   const project = $('project'), prompt = $('prompt'), start = $('start'), mode = $('mode'), profile = $('profile');
   const statusText = { idle: 'Aguardando', starting: 'Preparando execução', running: 'Em andamento', completed: 'Concluída', failed: 'Falhou', interrupted: 'Cancelada' };
-  let lastId = 0, active = false, clock, streamPromise = null;
+  let lastId = 0, active = true, streamPromise = null;
   let quotaSnapshot = null;
   const quotaFreshnessSeconds = 180;
   setInterval(() => { if (quotaSnapshot) renderQuotas(quotaSnapshot); }, 30000);
-  projects.forEach((path) => { const option = document.createElement('option'); option.value = path; option.textContent = path; project.append(option); });
+  projects.forEach((item) => { const option = document.createElement('option'); option.value = item.id; option.textContent = item.name; project.append(option); });
+  function publicationAllowed() { return projects.find(p => p.id === project.value)?.publish; }
+  project.addEventListener('change', () => mode.dispatchEvent(new Event('change')));
   prompt.addEventListener('input', () => $('char-count').textContent = `${prompt.value.length.toLocaleString('pt-BR')} / 16.000`);
   mode.addEventListener('change', () => {
     const dev = mode.value === 'development';
@@ -17,8 +19,8 @@
     $('engine').disabled = dev;
     if (dev) $('engine').value = 'app-server';
     $('effective-mode').textContent = dev ? 'Desenvolvimento' : 'Leitura';
-    $('publish-option').classList.toggle('hidden', !dev);
-    if (!dev) $('publish-draft-pr').checked = false;
+    $('publish-option').classList.toggle('hidden', !dev || !publicationAllowed());
+    if (!dev || !publicationAllowed()) $('publish-draft-pr').checked = false;
   });
   function lockSelection(locked) {
     project.disabled = locked;
@@ -34,6 +36,24 @@
   function render(state) {
     if (Object.hasOwn(state, 'rate_limits')) renderQuotas(state.rate_limits);
     const status = state.status || 'idle';
+    active = Boolean(state.busy) || ['starting', 'running'].includes(status);
+    start.disabled = active;
+    $('new-task').disabled = active;
+    if (state.project) {
+      if (![...project.options].some(option => option.value === state.project)) {
+        const option = document.createElement('option'); option.value = state.project;
+        option.textContent = state.project_name; project.append(option);
+      }
+      project.value = state.project;
+      mode.value = state.mode;
+      $('engine').value = state.engine;
+      profile.value = state.route_profile || 'auto';
+      mode.dispatchEvent(new Event('change'));
+      $('execution').classList.remove('hidden');
+      $('run-title').textContent = state.prompt;
+      $('project-label').textContent = state.project_name;
+    }
+    $('publish-draft-pr').disabled = active;
     $('status').className = `status ${status}`;
     $('status').querySelector('span').textContent = statusText[status] || 'Aguardando';
     $('progress').classList.toggle('active', status === 'running' || status === 'starting');
@@ -46,8 +66,8 @@
     else if (state.mode === 'reading') $('effective-mode').textContent = 'Leitura · readOnly';
     lockSelection(['starting', 'running'].includes(status) || Boolean(state.thread_id));
     renderApprovals(state.approvals || []);
-    $('publish-panel').classList.toggle('hidden', !state.publish_attempted && !state.publish_result);
-    $('publish-status').textContent = state.publish_result || '';
+    $('publish-panel').classList.toggle('hidden', !state.publish_authorized && !state.publish_attempted && !state.publish_result);
+    $('publish-status').textContent = state.publish_result || (state.publish_authorized ? 'Publicação de Draft PR autorizada ao concluir.' : '');
     const files = state.changed_files || [];
     $('changed-files').classList.toggle('hidden', files.length === 0);
     $('changed-files').textContent = files.length ? `Alterações locais observadas: ${files.join(', ')}` : '';
@@ -62,7 +82,7 @@
     $('tokens').textContent = state.input_tokens == null && state.output_tokens == null ? 'Tokens indisponíveis' : `Entrada ${metric(state.input_tokens)} · cache ${metric(state.cached_input_tokens)} · saída ${metric(state.output_tokens)}`;
     if (state.duration_seconds != null) $('elapsed').textContent = `${state.duration_seconds.toFixed(1)} s`;
     if (['completed', 'failed', 'interrupted'].includes(status)) {
-      active = false; clearInterval(clock); start.disabled = false; start.innerHTML = '<span class="play">▶</span> Iniciar tarefa <kbd>⌘ ↵</kbd>';
+      start.disabled = active; start.innerHTML = '<span class="play">▶</span> Iniciar tarefa <kbd>⌘ ↵</kbd>';
     }
   }
   function renderApprovals(approvals) {
@@ -193,7 +213,7 @@
           else if (line.startsWith('event: ')) kind = line.slice(7);
           else if (line.startsWith('data: ')) data += line.slice(6);
         }
-        if (Number.isInteger(id)) lastId = id;
+        if (Number.isInteger(id)) { if (id <= lastId) continue; lastId = id; }
         if (!data) continue;
         const parsed = JSON.parse(data);
         if (kind === 'state') render(parsed);
@@ -220,7 +240,7 @@
     active = true; $('event-list').replaceChildren(); $('event-count').textContent = '0 eventos';
     $('execution').classList.remove('hidden'); $('run-title').textContent = task;
     $('conversation').replaceChildren(); $('session-id').classList.add('hidden');
-    $('project-label').textContent = project.value; $('elapsed').textContent = 'Em andamento';
+    $('project-label').textContent = project.selectedOptions[0]?.textContent; $('elapsed').textContent = 'Em andamento';
     $('result-panel').classList.add('hidden'); $('error').classList.add('hidden'); $('progress').style.width = '';
     start.disabled = true; start.textContent = 'Iniciando…';
     render({ status: 'starting', mode: mode.value });
@@ -231,10 +251,6 @@
       if (!response.ok) { const detail = await response.text(); throw new Error(detail || 'Não foi possível iniciar.'); }
       lockSelection(true);
       stream();
-      clock = setInterval(async () => {
-        const response = await fetch('/api/status', { headers: { 'X-CSRF-Token': csrf } });
-        if (response.ok) render(await response.json());
-      }, 1000);
     } catch (error) { active = false; render({ status: 'failed', error: error.message }); }
   });
   $('cancel').addEventListener('click', async () => {
@@ -267,6 +283,62 @@
     prompt.value = ''; prompt.dispatchEvent(new Event('input')); prompt.focus(); $('execution').classList.add('hidden');
     $('approval-feedback').textContent = ''; $('approval-feedback').classList.add('hidden'); lockSelection(false);
   });
-  fetch('/api/status', { headers: { 'X-CSRF-Token': csrf } }).then((response) => response.ok ? response.json() : null).then((state) => { if (state) render(state); }).catch(() => {});
-  stream();
+  async function recover() {
+    start.disabled = true;
+    try {
+      const response = await fetch('/api/session', { headers: { 'X-CSRF-Token': csrf } });
+      if (!response.ok) throw new Error('Não foi possível recuperar a sessão.');
+      const state = await response.json();
+      $('conversation').replaceChildren(); $('event-list').replaceChildren();
+      for (const [, kind, data] of state.events) {
+        if (kind === 'message') addMessage(data.role, data.text);
+        else if (kind === 'event') addEvent(data.message);
+      }
+      lastId = state.cursor;
+      render(state);
+      stream();
+    } catch (error) {
+      $('execution').classList.remove('hidden');
+      $('error').classList.remove('hidden'); $('error').textContent = error.message;
+      setTimeout(recover, 2000);
+    }
+  }
+  recover();
+  setInterval(async () => {
+    if (!active || !streamPromise) return;
+    try {
+      const response = await fetch('/api/status', {headers: {'X-CSRF-Token': csrf}});
+      if (response.ok) render(await response.json());
+    } catch (_) { /* SSE reconnects independently. */ }
+  }, 1000);
+  let maintenanceWaiting = false;
+  async function maintenanceStatus() {
+    try {
+      const response = await fetch('/api/maintenance', {headers: {'X-CSRF-Token': csrf}});
+      if (response.status === 403 && maintenanceWaiting) { location.reload(); return; }
+      if (!response.ok) return;
+      const data = await response.json();
+      if (maintenanceWaiting && data.instance !== csrf) { location.reload(); return; }
+      if (maintenanceWaiting && !data.operation?.finished_at) return;
+      $('maintenance-status').textContent = `LIVE: ${data.live} · ${data.version}\nImplantado: ${data.deployed || '—'}\nMain: ${data.remote || '—'}\nVerificação: ${new Date(data.checked_at * 1000).toLocaleString()}\n${data.message || ''}\n${data.operation ? JSON.stringify(data.operation) : ''}`;
+      $('maintenance-restart').disabled = !data.available || data.busy || active;
+      $('maintenance-update').disabled = !data.available || data.busy || active;
+      $('maintenance-update').hidden = data.version !== 'atualização disponível';
+    } catch (_) { /* Poll again while the service restarts. */ }
+  }
+  for (const action of ['restart', 'update']) {
+    $(`maintenance-${action}`).addEventListener('click', async () => {
+      if (!confirm(`${action === 'update' ? 'Atualizar e reiniciar' : 'Reiniciar'} a LIVE? Sessões em memória serão perdidas.`)) return;
+      const response = await api('/api/maintenance', {action, confirm: true});
+      const result = await response.json();
+      $('maintenance-status').textContent = result.message;
+      if (result.accepted) {
+        $('maintenance-restart').disabled = true;
+        $('maintenance-update').disabled = true;
+        setTimeout(() => { maintenanceWaiting = true; }, 6000);
+      }
+    });
+  }
+  maintenanceStatus();
+  setInterval(maintenanceStatus, 10000);
 })();
