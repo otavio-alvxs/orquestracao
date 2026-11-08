@@ -2,7 +2,7 @@
   const csrf = document.querySelector('meta[name="csrf-token"]').content;
   const projects = JSON.parse(document.querySelector('meta[name="projects"]').content);
   const $ = (id) => document.getElementById(id);
-  const project = $('project'), prompt = $('prompt'), start = $('start'), mode = $('mode'), profile = $('profile');
+  const project = $('project'), prompt = $('prompt'), start = $('start'), mode = $('mode'), profile = $('profile'), workflow = $('workflow');
   const statusText = { idle: 'Aguardando', starting: 'Preparando execução', running: 'Em andamento', completed: 'Concluída', failed: 'Falhou', interrupted: 'Cancelada' };
   let lastId = 0, active = true, streamPromise = null;
   let quotaSnapshot = null;
@@ -21,12 +21,24 @@
     $('effective-mode').textContent = dev ? 'Desenvolvimento' : 'Leitura';
     $('publish-option').classList.toggle('hidden', !dev || !publicationAllowed());
     if (!dev || !publicationAllowed()) $('publish-draft-pr').checked = false;
+    workflow.disabled = !dev;
+    if (!dev) workflow.value = 'direct';
+    profile.disabled = workflow.value === 'orchestrated';
+  });
+  workflow.addEventListener('change', () => {
+    const orchestrated = workflow.value === 'orchestrated';
+    if (orchestrated) { mode.value = 'development'; $('engine').value = 'app-server'; }
+    $('engine').disabled = orchestrated || mode.value === 'development';
+    profile.disabled = orchestrated;
+    $('publish-option').classList.toggle('hidden', orchestrated || mode.value !== 'development' || !publicationAllowed());
+    if (orchestrated) $('publish-draft-pr').checked = false;
   });
   function lockSelection(locked) {
     project.disabled = locked;
     mode.disabled = locked;
     $('engine').disabled = locked || mode.value === 'development';
     profile.disabled = locked;
+    workflow.disabled = locked || mode.value !== 'development';
   }
   prompt.addEventListener('keydown', (event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') start.click(); });
 
@@ -46,9 +58,11 @@
       }
       project.value = state.project;
       mode.value = state.mode;
+      workflow.value = state.workflow || 'direct';
       $('engine').value = state.engine;
       profile.value = state.route_profile || 'auto';
       mode.dispatchEvent(new Event('change'));
+      workflow.dispatchEvent(new Event('change'));
       $('execution').classList.remove('hidden');
       $('run-title').textContent = state.prompt;
       $('project-label').textContent = state.project_name;
@@ -74,12 +88,12 @@
     $('error').classList.toggle('hidden', !state.error);
     $('error').textContent = state.error || '';
     if (state.thread_id) { $('session-id').textContent = `Sessão ${state.thread_id}`; $('session-id').classList.remove('hidden'); }
-    $('composer').classList.toggle('hidden', $('engine').value !== 'app-server' || !['completed','failed','interrupted'].includes(status));
-    $('escalation').classList.toggle('hidden', $('engine').value !== 'app-server' || !['completed','failed'].includes(status));
+    $('composer').classList.toggle('hidden', $('engine').value !== 'app-server' || state.workflow === 'orchestrated' || !['completed','failed','interrupted'].includes(status));
+    $('escalation').classList.toggle('hidden', $('engine').value !== 'app-server' || state.workflow === 'orchestrated' || !['completed','failed'].includes(status));
     $('route-info').textContent = state.requested_model ? `Solicitado: ${state.requested_model}/${state.requested_effort}${state.observed_model ? ` · rerota observada: ${state.observed_model}${state.observed_route_reason ? ` (${state.observed_route_reason})` : ''}` : ''} · ${state.route_reason || ''}${state.escalations?.length ? ` · Escalonamentos: ${state.escalations.length}` : ''}` : '';
     renderAgents(state.agents, state);
     const metric = (value) => Number.isInteger(value) ? `${value.toLocaleString('pt-BR')} tokens` : 'tokens indisponíveis';
-    $('tokens').textContent = state.input_tokens == null && state.output_tokens == null ? 'Tokens indisponíveis' : `Entrada ${metric(state.input_tokens)} · cache ${metric(state.cached_input_tokens)} · saída ${metric(state.output_tokens)}`;
+    $('tokens').textContent = state.workflow === 'orchestrated' ? 'Total da orquestração indisponível · métricas por etapa no painel' : state.input_tokens == null && state.output_tokens == null ? 'Tokens indisponíveis' : `Entrada ${metric(state.input_tokens)} · cache ${metric(state.cached_input_tokens)} · saída ${metric(state.output_tokens)}`;
     if (state.duration_seconds != null) $('elapsed').textContent = `${state.duration_seconds.toFixed(1)} s`;
     if (['completed', 'failed', 'interrupted'].includes(status)) {
       start.disabled = active; start.innerHTML = '<span class="play">▶</span> Iniciar tarefa <kbd>⌘ ↵</kbd>';
@@ -168,7 +182,7 @@
     const entries = Object.entries(agents || {}).filter(([id, agent]) => id !== 'coordinator' && agent.role !== 'Coordenador');
     const expanded = new Map([...$('agent-list').querySelectorAll('details')].map((node) => [node.dataset.agent, node.open]));
     $('agent-list').replaceChildren();
-    const labels = { running: 'Em atividade', completed: 'Concluído', failed: 'Falhou', interrupted: 'Interrompido', shutdown: 'Encerrado', unknown: 'Estado desconhecido' };
+    const labels = { planned: 'Planejada', running: 'Em atividade', completed: 'Concluída', failed: 'Falhou', blocked: 'Bloqueada', interrupted: 'Cancelada', cancelled: 'Cancelada', shutdown: 'Encerrado', unknown: 'Estado desconhecido' };
     const runningCount = entries.filter(([, agent]) => agent.status === 'running').length + (['running','starting'].includes(state.status) ? 1 : 0);
     $('agent-count').textContent = `${runningCount} ativo${runningCount === 1 ? '' : 's'}`;
     const coordinator = document.createElement('li'); coordinator.className = 'agent-row coordinator';
@@ -191,7 +205,9 @@
       {
         const technical = document.createElement('details'), summary = document.createElement('summary'), detail = document.createElement('span');
         technical.className = 'agent-technical'; technical.dataset.agent = id; technical.open = expanded.get(id) || false; summary.textContent = 'Detalhes';
-        detail.textContent = `Solicitado: ${[agent.requested_model, agent.requested_effort].filter(Boolean).join(' / ') || 'indisponível'} · Observado: ${[agent.observed_model || agent.model, agent.observed_effort || agent.effort].filter(Boolean).join(' / ') || 'indisponível'}`; technical.append(summary, detail); li.append(technical);
+        const stageUsage = [['Entrada', agent.input_tokens], ['Cache', agent.cached_input_tokens], ['Saída', agent.output_tokens]]
+          .filter(([, value]) => Number.isInteger(value)).map(([label, value]) => `${label} ${Number(value).toLocaleString('pt-BR')}`);
+        detail.textContent = agent.role === 'Etapa' ? `Modelo solicitado: ${[agent.requested_model, agent.requested_effort].filter(Boolean).join(' / ')} · ${stageUsage.length ? stageUsage.join(' · ') + ' tokens' : 'métricas indisponíveis'}` : `Solicitado: ${[agent.requested_model, agent.requested_effort].filter(Boolean).join(' / ') || 'indisponível'} · Observado: ${[agent.observed_model || agent.model, agent.observed_effort || agent.effort].filter(Boolean).join(' / ') || 'indisponível'}`; technical.append(summary, detail); li.append(technical);
       }
       $('agent-list').append(li);
     }
@@ -247,7 +263,7 @@
     try {
       const publishDraftPr = $('publish-draft-pr').checked;
       $('publish-draft-pr').checked = false;
-      const response = await api('/api/run', { prompt: task, project: project.value, engine: $('engine').value, mode: mode.value, profile: profile.value, publish_draft_pr: publishDraftPr });
+      const response = await api('/api/run', { prompt: task, project: project.value, engine: $('engine').value, mode: mode.value, workflow: workflow.value, profile: profile.value, publish_draft_pr: publishDraftPr });
       if (!response.ok) { const detail = await response.text(); throw new Error(detail || 'Não foi possível iniciar.'); }
       lockSelection(true);
       stream();

@@ -25,6 +25,7 @@ from typing import Callable
 
 from codex_runner import CodexRun, validate_project
 from app_server import AppServerRun
+from orchestrated_run import create_orchestrated_run, OrchestratedRun
 from rate_limits import RateLimitMonitor
 from task_routing import select_route, escalate_route
 
@@ -403,7 +404,7 @@ class OperationsServer:
             await asyncio.gather(self.session.publish_task, return_exceptions=True)
         if self.session.run and self.session.run.state.status not in TERMINAL:
             await self.session.run.cancel()
-        if isinstance(self.session.run, AppServerRun):
+        if isinstance(self.session.run, (AppServerRun, OrchestratedRun)):
             await self.session.run.close()
         if self.session.task and not self.session.task.done():
             try:
@@ -560,7 +561,7 @@ class OperationsServer:
                 if path == "/api/approval":
                     run = self.session.run
                     approval_id, decision = payload.get("request_id"), payload.get("decision")
-                    if not isinstance(run, AppServerRun) or self.session.engine != "app-server":
+                    if not isinstance(run, (AppServerRun, OrchestratedRun)) or self.session.engine != "app-server":
                         await self._response(writer, 409, "Nenhuma sessão app-server ativa".encode())
                         return
                     if not isinstance(approval_id, str) or decision not in ("accept", "decline"):
@@ -619,6 +620,16 @@ class OperationsServer:
         if publish and mode != "development":
             await self._response(writer, 400, b"Publicacao disponivel somente em Desenvolvimento")
             return
+        workflow = payload.get("workflow", "direct")
+        if workflow not in ("direct", "orchestrated"):
+            await self._response(writer, 400, b"Fluxo de execucao invalido")
+            return
+        if workflow == "orchestrated" and (mode != "development" or payload.get("engine", "exec") != "app-server"):
+            await self._response(writer, 400, b"O fluxo orquestrado exige Desenvolvimento e Codex app-server")
+            return
+        if workflow == "orchestrated" and publish:
+            await self._response(writer, 400, b"Draft PR indisponivel para execucao orquestrada")
+            return
         if publish and Path(project).resolve() != PUBLISH_PROJECT.resolve():
             await self._response(writer, 403, b"Publicacao nao autorizada neste projeto")
             return
@@ -650,9 +661,13 @@ class OperationsServer:
                 return
             route = select_route(prompt, profile)
             if engine == "app-server":
-                run = AppServerRun(project, prompt, mode=mode, profile=profile, **kwargs)
-                run.route_override = route
-                run.state.escalations = [route.reason] if payload.get("escalate") else []
+                if workflow == "orchestrated":
+                    run = create_orchestrated_run(project, "Produza um plano objetivo de implementação, riscos e verificações.",
+                                                  prompt, codex=self.codex, process_factory=self.process_factory)
+                else:
+                    run = AppServerRun(project, prompt, mode=mode, profile=profile, **kwargs)
+                    run.route_override = route
+                    run.state.escalations = [route.reason] if payload.get("escalate") else []
             else:
                 run = CodexRun(project, prompt, route=route, **kwargs)
         except ValueError:
@@ -661,7 +676,7 @@ class OperationsServer:
         if self.session.publish_lock.locked():
             await self._response(writer, 409, b"Uma publicacao esta em andamento")
             return
-        if isinstance(self.session.run, AppServerRun):
+        if isinstance(self.session.run, (AppServerRun, OrchestratedRun)):
             await self.session.run.close()
         # Keep the event ID monotonic, but never replay a previous task into a new view.
         self.session.events.clear()
@@ -682,6 +697,7 @@ class OperationsServer:
         self.session.publish_attempted = False
         self.session.publish_baseline = publish_baseline
         self.session.engine = engine
+        self.session.workflow = workflow
         self.session.task = asyncio.create_task(self._execute(run))
         if engine == "app-server":
             await self.session.emit("message", {"role": "user", "text": prompt})
@@ -726,12 +742,12 @@ class OperationsServer:
         assistant_message_emitted = False
         try:
             async for message in run.events():
-                if isinstance(run, AppServerRun) and run.state.status in TERMINAL and run.state.final and not assistant_message_emitted:
+                if isinstance(run, (AppServerRun, OrchestratedRun)) and run.state.status in TERMINAL and run.state.final and not assistant_message_emitted:
                     await self.session.emit("message", {"role": "assistant", "text": run.state.final})
                     assistant_message_emitted = True
                 await self.session.emit("event", {"message": message})
                 await self.session.emit("state", self._snapshot())
-            if isinstance(run, AppServerRun) and run.state.final and not assistant_message_emitted:
+            if isinstance(run, (AppServerRun, OrchestratedRun)) and run.state.final and not assistant_message_emitted:
                 await self.session.emit("message", {"role": "assistant", "text": run.state.final})
                 assistant_message_emitted = True
             if (run.state.status == "completed" and isinstance(run, AppServerRun) and
@@ -819,11 +835,12 @@ class OperationsServer:
         if elapsed is None and state.started_at is not None:
             elapsed = max(0, time.monotonic() - state.started_at)
         agents = getattr(state, "agents", {})
-        result = state.final if isinstance(run, AppServerRun) or state.status in TERMINAL else ""
+        result = state.final if isinstance(run, (AppServerRun, OrchestratedRun)) or state.status in TERMINAL else ""
         approvals = []
-        if isinstance(run, AppServerRun):
+        if isinstance(run, (AppServerRun, OrchestratedRun)):
+            approval_mode = run.active_run.mode if isinstance(run, OrchestratedRun) and run.active_run else run.mode
             approvals = [{**{k: v for k, v in item.items() if not k.startswith("_")},
-                          "can_approve": (run.mode == "development" and
+                          "can_approve": (approval_mode == "development" and
                                           not item.get("_network") and not item.get("_grant_root") and
                                           not item.get("_additional_permissions") and
                                           (not isinstance(item.get("_available_decisions"), list) or
@@ -841,6 +858,7 @@ class OperationsServer:
                 "route_profile": state.route_profile, "route_reason": state.route_reason,
                 "escalations": state.escalations,
                 "thread_id": getattr(run, "thread_id", None), "agents": agents,
+                "workflow": getattr(self.session, "workflow", "direct"),
                 "mode": getattr(run, "mode", "reading"), "approvals": approvals,
                 "changed_files": sorted(getattr(run, "changed_files", set())),
                 "publish_authorized": self.session.publish_authorized,

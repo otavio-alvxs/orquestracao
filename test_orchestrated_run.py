@@ -1,7 +1,8 @@
+import asyncio
 import unittest
 from types import SimpleNamespace
 
-from orchestrated_run import run_orchestrated
+from orchestrated_run import run_orchestrated, create_orchestrated_run
 from task_routing import SOL, LUNA
 
 
@@ -11,16 +12,106 @@ class FakeRun:
         self.route_override = None
         self.state = SimpleNamespace(status="starting", final="plano útil")
         self.closed = False
+        self.pending_approvals = {"approval": {"id": "approval"}}
+        self.changed_files = set()
+        self.thread_id = "fake-thread"
+        self.cancelled = False
+        self.state.input_tokens = self.kwargs.get("input_tokens")
+        self.state.output_tokens = self.kwargs.get("output_tokens")
+        self.state.cached_input_tokens = self.kwargs.get("cached_input_tokens")
 
     async def events(self):
+        if self.kwargs.get("event_error"):
+            self.state.status = "running"
+            raise RuntimeError("simulated event failure")
         self.state.status = self.kwargs.get("finish", "completed")
         yield "done"
 
     async def close(self):
         self.closed = True
+        if self.kwargs.get("close_error"):
+            raise RuntimeError("simulated close failure")
+
+    async def cancel(self):
+        self.cancelled = True
+
+    async def decide_approval(self, request_id, decision):
+        return request_id == "approval" and decision in ("accept", "decline")
 
 
 class OrchestrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_usage_is_per_stage_and_orchestration_total_stays_unknown(self):
+        def factory(*args, **kwargs):
+            kwargs.update(input_tokens=10, output_tokens=4, cached_input_tokens=2)
+            return FakeRun(*args, **kwargs)
+        run = create_orchestrated_run(".", "planeje", "implemente", run_factory=factory)
+        [message async for message in run.events()]
+        self.assertEqual(run.state.agents["planning"]["input_tokens"], 10)
+        self.assertEqual(run.state.agents["implementation"]["output_tokens"], 4)
+        self.assertIsNone(run.state.input_tokens)
+        self.assertIsNone(run.state.output_tokens)
+        self.assertIsNone(run.state.cached_input_tokens)
+
+    async def test_stage_start_execution_and_close_exceptions_are_terminal(self):
+        scenarios = (
+            ("start", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("start")), "failed", "blocked"),
+            ("events", lambda *args, **kwargs: FakeRun(*args, event_error=True, **kwargs), "failed", "blocked"),
+            ("close", lambda *args, **kwargs: FakeRun(*args, close_error=True, **kwargs), "failed", "blocked"),
+        )
+        for name, factory, planning_status, implementation_status in scenarios:
+            with self.subTest(name=name):
+                run = create_orchestrated_run(".", "planeje", "implemente", run_factory=factory)
+                [message async for message in run.events()]
+                self.assertEqual(run.state.status, "failed")
+                self.assertEqual(run.state.agents["planning"]["status"], planning_status)
+                self.assertEqual(run.state.agents["implementation"]["status"], implementation_status)
+                self.assertIsNone(run.active_run)
+                self.assertEqual(run.pending_approvals, {})
+
+    async def test_streams_both_stages_and_preserves_approval_contract(self):
+        runs = []
+        def factory(*args, **kwargs):
+            run = FakeRun(*args, **kwargs)
+            runs.append(run)
+            return run
+        run = create_orchestrated_run(".", "planeje", "implemente", run_factory=factory)
+        self.assertEqual([a["status"] for a in run.state.agents.values()], ["planned", "planned"])
+        iterator = run.events()
+        first_message = await anext(iterator)
+        self.assertIn("Planejamento", first_message)
+        self.assertTrue(await run.decide_approval("approval", "accept"))
+        messages = [message async for message in iterator]
+        self.assertEqual(len(runs), 2)
+        self.assertTrue(any("Planejamento" in m for m in messages))
+        self.assertTrue(any("Implementação" in m for m in messages))
+        self.assertEqual(run.state.status, "completed")
+        self.assertEqual([a["status"] for a in run.state.agents.values()], ["completed", "completed"])
+        self.assertTrue(all(r.closed for r in runs))
+
+    async def test_cancel_forwards_to_active_stage_and_prevents_next_stage(self):
+        runs = []
+        def factory(*args, **kwargs):
+            run = FakeRun(*args, **kwargs)
+            async def events():
+                run.state.status = "running"
+                yield "started"
+                await asyncio.sleep(0)
+                run.state.status = "interrupted"
+            run.events = events
+            runs.append(run)
+            return run
+        run = create_orchestrated_run(".", "planeje", "implemente", run_factory=factory)
+        iterator = run.events()
+        await anext(iterator)
+        await run.cancel()
+        await anext(iterator)
+        self.assertIn("cancelada", await anext(iterator))
+        with self.assertRaises(StopAsyncIteration):
+            await anext(iterator)
+        self.assertEqual(len(runs), 1)
+        self.assertTrue(runs[0].cancelled)
+        self.assertEqual(run.state.status, "interrupted")
+
     async def test_plan_is_transferred_and_processes_closed(self):
         runs = []
         def factory(*args, **kwargs):
