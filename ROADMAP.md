@@ -170,6 +170,14 @@ abaixo permanecem propostas de evolução.
 
 ## Próximas capacidades prioritárias
 
+O direcionamento canônico de evolução — incluindo **Progressive Disclosure,
+Test-Time Compute, Eval-Driven Loops, Tool Poisoning, compactação, caching,
+memória, hooks, multiagentes, Antigravity, modelos locais, autoaperfeiçoamento
+e RLHF** — está em [TECHNICAL_RADAR.md](TECHNICAL_RADAR.md). A lista prioriza
+estudo e implementação incremental conforme evidência, **sem autorizar mudanças
+automáticas** nem pressupor funcionalidades já entregues. O TARS poderá consumir
+essas capacidades futuramente, preservando sua própria autoridade e isolamento.
+
 - Evoluir a observabilidade somente de leitura a partir das evidências existentes,
   respeitando as limitações dos formatos reconhecidos e a privacidade dos históricos.
 - Medir tempo e tokens consumidos, taxa de sucesso, retrabalho, uso dos modelos
