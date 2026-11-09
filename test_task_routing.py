@@ -2,10 +2,29 @@ import json
 import unittest
 from pathlib import Path
 
-from task_routing import select_route, escalate_route, LUNA, SOL
+from task_routing import select_route, automatic_workflow, escalate_route, LUNA, SOL
 
 
 class RoutingTests(unittest.TestCase):
+    def test_offline_adaptive_execution_evaluation(self):
+        # Synthetic policy checks only; they do not measure tokens, quality, or cost.
+        cases = (
+            ("Resuma este arquivo.", "simple", "direct", LUNA, "low"),
+            ("Implemente uma função clamp", "intermediate", "direct", LUNA, "medium"),
+            ("Crie um arquivo hello.py contendo uma função saudacao() que retorna exatamente 'ok'. Crie test_hello.py com um teste unittest que confirme o retorno. Execute apenas o teste criado.",
+             "intermediate", "direct", LUNA, "medium"),
+            ("Create answer.py with a function answer() that returns exactly '42'. Create test_answer.py with a unittest test that verifies the return. Run only the created test.",
+             "intermediate", "direct", LUNA, "medium"),
+            ("Adicione uma função para o projeto.", "complex", "orchestrated", SOL, "medium"),
+            ("Apague os dados de produção.", "complex", "orchestrated", SOL, "medium"),
+        )
+        for prompt, profile, flow, model, effort in cases:
+            with self.subTest(prompt=prompt):
+                route = select_route(prompt)
+                self.assertEqual(route.profile, profile)
+                self.assertEqual(automatic_workflow(route)[0], flow)
+                self.assertEqual((route.model, route.effort), (model, effort))
+
     def test_frozen_reference_cases_and_report_small_set_metrics(self):
         cases = json.loads(Path(__file__).with_name("routing_reference.json").read_text())
         ranks = {"simple": 0, "intermediate": 1, "complex": 2}
@@ -31,6 +50,10 @@ class RoutingTests(unittest.TestCase):
             "Crie um arquivo app.py com um servidor HTTP que processa pagamentos.",
             "Crie um arquivo script.sh com comandos para apagar todos os dados.",
             "Implemente uma função que resolva o problema.",
+            "Crie hello.py com uma função que calcula uma saudação. Crie test_hello.py com unittest e execute apenas o teste criado.",
+            "Crie auth.py contendo uma função autenticar() que retorna exatamente 'ok'. Crie test_auth.py com unittest que confirme o retorno. Execute apenas o teste criado.",
+            "Crie hello.py contendo uma função saudacao() que retorna exatamente 'ok'. Crie test_hello.py com unittest que confirme o retorno. Crie README.md. Execute apenas o teste criado.",
+            "Crie auth.py com uma função que retorna exatamente 'ok'. Crie test_auth.py com unittest e confirme o retorno. Execute apenas o teste criado.",
             "Adicione uma função para o projeto.",
             "Implement a function to authorize users based on their roles.",
             "Implemente uma função para criptografar dados usando AES.",

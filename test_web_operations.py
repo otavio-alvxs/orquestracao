@@ -160,6 +160,35 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
                     await asyncio.gather(self.app.session.task, return_exceptions=True)
                 self.app.session.run = None
 
+    async def test_automatic_workflow_resolves_route_and_exposes_both_flows(self):
+        self.app = OperationsServer([self.root])
+        self.app._response = AsyncMock()
+        with patch.object(self.app, "_execute", new=AsyncMock()), \
+             patch("web_operations.create_orchestrated_run") as orchestrated:
+            await self.app._start_run_locked({"prompt": "Resuma este arquivo.", "project": str(self.root),
+                                               "mode": "development", "engine": "app-server",
+                                               "workflow": "automatic"}, None)
+            self.assertIsInstance(self.app.session.run, AppServerRun)
+            self.assertEqual(self.app.session.run.profile, "auto")
+            self.assertEqual(self.app._snapshot()["requested_workflow"], "automatic")
+            self.assertEqual(self.app._snapshot()["effective_workflow"], "direct")
+            self.assertIn("tarefa curta e delimitada", self.app._snapshot()["workflow_reason"])
+            if self.app.session.task:
+                self.app.session.task.cancel()
+                await asyncio.gather(self.app.session.task, return_exceptions=True)
+
+            orchestrated.return_value = OrchestratedRun(str(self.root), "tarefa", "plano")
+            await self.app._start_run_locked({"prompt": "Adicione uma função para o projeto.",
+                                               "project": str(self.root), "mode": "development",
+                                               "engine": "app-server", "workflow": "automatic"}, None)
+            orchestrated.assert_called_once()
+            self.assertIn("no máximo 8 linhas", orchestrated.call_args.args[1])
+            self.assertEqual(self.app._snapshot()["effective_workflow"], "orchestrated")
+            self.assertEqual(self.app._snapshot()["workflow"], "automatic")
+            if self.app.session.task:
+                self.app.session.task.cancel()
+                await asyncio.gather(self.app.session.task, return_exceptions=True)
+
     async def test_start_gate_blocks_second_run_and_maintenance(self):
         self.app = OperationsServer([self.root])
         self.app._response = AsyncMock()

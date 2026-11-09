@@ -23,10 +23,10 @@
     if (!dev || !publicationAllowed()) $('publish-draft-pr').checked = false;
     workflow.disabled = !dev;
     if (!dev) workflow.value = 'direct';
-    profile.disabled = workflow.value === 'orchestrated';
+    profile.disabled = ['orchestrated', 'automatic'].includes(workflow.value);
   });
   workflow.addEventListener('change', () => {
-    const orchestrated = workflow.value === 'orchestrated';
+    const orchestrated = ['orchestrated', 'automatic'].includes(workflow.value);
     if (orchestrated) { mode.value = 'development'; $('engine').value = 'app-server'; }
     $('engine').disabled = orchestrated || mode.value === 'development';
     profile.disabled = orchestrated;
@@ -60,7 +60,7 @@
       mode.value = state.mode;
       workflow.value = state.workflow || 'direct';
       $('engine').value = state.engine;
-      profile.value = state.route_profile || 'auto';
+      profile.value = state.requested_profile || state.route_profile || 'auto';
       mode.dispatchEvent(new Event('change'));
       workflow.dispatchEvent(new Event('change'));
       $('execution').classList.remove('hidden');
@@ -88,12 +88,15 @@
     $('error').classList.toggle('hidden', !state.error);
     $('error').textContent = state.error || '';
     if (state.thread_id) { $('session-id').textContent = `Sessão ${state.thread_id}`; $('session-id').classList.remove('hidden'); }
-    $('composer').classList.toggle('hidden', $('engine').value !== 'app-server' || state.workflow === 'orchestrated' || !['completed','failed','interrupted'].includes(status));
-    $('escalation').classList.toggle('hidden', $('engine').value !== 'app-server' || state.workflow === 'orchestrated' || !['completed','failed'].includes(status));
-    $('route-info').textContent = state.requested_model ? `Solicitado: ${state.requested_model}/${state.requested_effort}${state.observed_model ? ` · rerota observada: ${state.observed_model}${state.observed_route_reason ? ` (${state.observed_route_reason})` : ''}` : ''} · ${state.route_reason || ''}${state.escalations?.length ? ` · Escalonamentos: ${state.escalations.length}` : ''}` : '';
+    const effectiveWorkflow = state.effective_workflow || state.workflow || 'direct';
+    $('composer').classList.toggle('hidden', $('engine').value !== 'app-server' || effectiveWorkflow === 'orchestrated' || !['completed','failed','interrupted'].includes(status));
+    $('escalation').classList.toggle('hidden', $('engine').value !== 'app-server' || effectiveWorkflow === 'orchestrated' || !['completed','failed'].includes(status));
+    const flowName = (name) => ({ direct: 'Direta', orchestrated: 'Orquestrada', automatic: 'Automática · Econômica' }[name] || name);
+    const flow = `Fluxo: ${flowName(state.requested_workflow || state.workflow || 'direct')} → ${flowName(effectiveWorkflow)}${state.workflow_reason ? ` · ${state.workflow_reason}` : ''}`;
+    $('route-info').textContent = `${flow}${state.requested_model ? ` · Modelo/esforço solicitado: ${state.requested_model}/${state.requested_effort}${state.observed_model ? ` · rerota observada: ${state.observed_model}${state.observed_route_reason ? ` (${state.observed_route_reason})` : ''}` : ''}${state.workflow_reason ? '' : ` · ${state.route_reason || ''}`}${state.escalations?.length ? ` · Escalonamentos: ${state.escalations.length}` : ''}` : ''}`;
     renderAgents(state.agents, state);
     const metric = (value) => Number.isInteger(value) ? `${value.toLocaleString('pt-BR')} tokens` : 'tokens indisponíveis';
-    $('tokens').textContent = state.workflow === 'orchestrated' ? 'Total da orquestração indisponível · métricas por etapa no painel' : state.input_tokens == null && state.output_tokens == null ? 'Tokens indisponíveis' : `Entrada ${metric(state.input_tokens)} · cache ${metric(state.cached_input_tokens)} · saída ${metric(state.output_tokens)}`;
+    $('tokens').textContent = effectiveWorkflow === 'orchestrated' ? 'Total da orquestração indisponível · métricas por etapa no painel' : state.input_tokens == null && state.output_tokens == null ? 'Tokens indisponíveis' : `Entrada ${metric(state.input_tokens)} · cache ${metric(state.cached_input_tokens)} · saída ${metric(state.output_tokens)}`;
     if (state.duration_seconds != null) $('elapsed').textContent = `${state.duration_seconds.toFixed(1)} s`;
     if (['completed', 'failed', 'interrupted'].includes(status)) {
       start.disabled = active; start.innerHTML = '<span class="play">▶</span> Iniciar tarefa <kbd>⌘ ↵</kbd>';

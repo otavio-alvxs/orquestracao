@@ -6,6 +6,29 @@ LUNA = "gpt-6-luna"
 SOL = "gpt-6.1-sol"
 
 
+def _bounded_python_unittest_task(text: str) -> bool:
+    """Recognize only a two-file Python task with an explicit literal contract."""
+    created = re.findall(
+        r"\b(?:crie|create)\s+(?:(?:o|a|um|uma|the)\s+)?"
+        r"(?:(?:arquivo|file)\s+)?([a-z_]\w*\.py)\b", text)
+    if len(created) != 2 or len(re.findall(r"\b(crie|create)\b", text)) != 2:
+        return False
+    implementation = next((name for name in created if not name.startswith("test_")), None)
+    test_file = next((name for name in created if name.startswith("test_")), None)
+    if not implementation or test_file != "test_" + implementation:
+        return False
+    function = re.search(
+        r"\b(?:função|function)\s+([a-z_]\w*)\s*\([^)]{0,80}\)\s*"
+        r"(?:(?:que|that)\s+)?(?:retorna exatamente|returns exactly)\s+(['\"][^'\"]{1,40}['\"])", text)
+    return bool(
+        function
+        and "unittest" in text
+        and re.search(r"\b(?:teste|test)\w*\b.{0,80}\b(?:confirm\w*|verif\w*|assert\w*)\b", text)
+        and re.search(r"\b(?:retorno|return)\b", text)
+        and re.search(r"\bexecute\s+apenas\s+(?:o\s+)?teste\s+criado\b|\brun\s+only\s+(?:the\s+)?(?:created\s+test|test\s+created)\b", text)
+    )
+
+
 @dataclass(frozen=True)
 class Route:
     profile: str
@@ -36,6 +59,8 @@ def select_route(prompt: str, profile: str = "auto") -> Route:
         )
         if not text or risk.search(text):
             profile = "complex"
+        elif _bounded_python_unittest_task(text):
+            profile = "intermediate"
         else:
             # Compound requests stay conservative. Allow only the recognized
             # nominal bounds phrase; other conjunctions can overroute safely.
@@ -94,3 +119,10 @@ def escalate_route(route: Route, reason: str) -> Route:
             raise ValueError("A política já está no esforço máximo.")
         return Route(route.profile, SOL, "high", "escalonamento: " + reason.strip())
     return Route(route.profile, SOL, "medium", "escalonamento: " + reason.strip())
+
+
+def automatic_workflow(route: Route) -> tuple[str, str]:
+    """Resolve the opt-in economic flow without inference or permission changes."""
+    if route.profile in {"simple", "intermediate"}:
+        return "direct", f"{route.reason}; execução única elegível"
+    return "orchestrated", f"{route.reason}; mantida orquestração conservadora"

@@ -1,5 +1,44 @@
 # v0.9 — eficiência de contexto (Missão 016)
 
+## v0.20 — política adaptativa e radar técnico
+
+`Automática · Econômica` é opt-in e usa o roteador local existente. Uma execução
+única atende às classes reconhecidas como simples/intermediárias; demais classes
+mantêm a orquestração conservadora já disponível. O plano transferido pelo
+aplicativo tem limite de oito linhas, sem resumidor adicional. Nenhuma métrica
+de piloto demonstra economia: cache é subconjunto da entrada e não deve ser
+somado; tokens não equivalem a custo ou cota. A Central apresenta apenas os
+valores reais informados pelo executor, com totais da orquestração indisponíveis
+quando não atribuíveis.
+
+Na validação foi observado o aviso não fatal `Future exception was never
+retrieved` em teste de encerramento do app-server. Registrado para referência;
+sem refatoração relacionada nesta missão.
+
+### Radar (ordem por prioridade e aplicabilidade)
+
+| Grupo / prioridade | Técnicas | Pré-requisitos e aplicabilidade | Riscos / decisão |
+| --- | --- | --- | --- |
+| Agora / alta | Eval-Driven Loops; Context Compaction; Progressive Disclosure | Avaliações offline reproduzíveis; compactação só com limites e contexto controlado pela aplicação; divulgação progressiva apenas para conteúdo que a aplicação possui | Perder instruções, omitir contexto ou confundir benchmark sintético com economia real. O roteamento recebe uma avaliação pequena; sem compactação geral nem carregador próprio de AGENTS.md, skills ou histórico Codex. |
+| Próximo / média | Prompt Caching; Git Worktrees; Hooks; Headless Run; Agent CI/CD; Self-Healing Tests | Telemetria/provider com atribuição; isolamento Git validado; contratos de hooks; execução não interativa e CI autorizados | Cache não comprova custo reduzido; worktrees e hooks podem executar ações inesperadas; headless exige contratos explícitos de permissão, cancelamento e logs; reparo automático pode mascarar falhas. |
+| Explorar / baixa | `/goal`; Parallel Agents; Test-Time Compute; Memory Consolidation; Self-Improving Loops | Suporte nativo disponível no runtime; benefício mensurável; memória controlada e avaliação antes/depois | `/goal` não é contrato da Central; paralelismo eleva contexto e complexidade; mais compute pode aumentar custo; memória/autoaperfeiçoamento podem persistir dados ou reforçar erros. Não implementados. |
+| Pesquisa / fora da missão | Model Quantization; RLHF; Tool Poisoning | Quantização exige escolher/operar modelos locais; RLHF exige dados, pipeline e governança; análise de poisoning exige modelo de ameaça e superfícies de ferramenta | Mudam comportamento, segurança ou operação de modelos; não há benefício concreto para esta Central nesta missão. Tool Poisoning é ameaça a mitigar, não recurso a ativar. |
+
+**Antigravity CLI:** a documentação oficial descreve execução headless (`-p` /
+`--print`) com formatos JSON e `stream-json` ([Headless mode](https://antigravity.google/docs/cli/headless/),
+[referência CLI](https://antigravity.google/docs/cli/reference)). Uma futura
+integração deverá obedecer aos contratos próprios de autenticação, permissões,
+cancelamento e métricas; esta nota não implica suporte ou integração no Codex
+nem neste repositório.
+
+**Comparação futura mínima:** fixar a mesma revisão, projeto limpo, tarefa e
+condições de sandbox; sortear ou alternar Direct, Automatic e Orchestrated em
+execuções isoladas repetidas; registrar sucesso de tarefa por critério definido,
+duração e métricas reportadas separadamente (entrada, cache como subconjunto,
+saída, modelo observado quando disponível). Comparar medianas e falhas sem
+misturar tokens, custo financeiro ou cota. Fazer apenas com autorização para o
+piloto real; a avaliação sintética atual não substitui esse experimento.
+
 ## Diagnóstico delimitado
 
 Execução informada pelo usuário: 9,5 s; entrada 32.249 tokens; cache de entrada
