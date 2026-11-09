@@ -14,13 +14,14 @@
   prompt.addEventListener('input', () => $('char-count').textContent = `${prompt.value.length.toLocaleString('pt-BR')} / 16.000`);
   mode.addEventListener('change', () => {
     const dev = mode.value === 'development';
+    const nonDirect = ['orchestrated', 'automatic'].includes(workflow.value);
     $('mode-help').textContent = dev ? 'Desenvolvimento usa workspaceWrite: pode alterar arquivos do projeto sem pedir autorização individual para cada edição.' : 'Leitura usa sandbox readOnly.';
     $('mode-hint').textContent = dev ? 'Aprovações adicionais aparecem quando o Codex solicitar.' : 'A execução não altera arquivos.';
     $('engine').disabled = dev;
     if (dev) $('engine').value = 'app-server';
     $('effective-mode').textContent = dev ? 'Desenvolvimento' : 'Leitura';
-    $('publish-option').classList.toggle('hidden', !dev || !publicationAllowed());
-    if (!dev || !publicationAllowed()) $('publish-draft-pr').checked = false;
+    $('publish-option').classList.toggle('hidden', nonDirect || !dev || !publicationAllowed());
+    if (nonDirect || !dev || !publicationAllowed()) $('publish-draft-pr').checked = false;
     workflow.disabled = !dev;
     if (!dev) workflow.value = 'direct';
     profile.disabled = ['orchestrated', 'automatic'].includes(workflow.value);
