@@ -43,11 +43,23 @@ class OrchestrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_usage_is_per_stage_and_orchestration_total_stays_unknown(self):
         def factory(*args, **kwargs):
             kwargs.update(input_tokens=10, output_tokens=4, cached_input_tokens=2)
-            return FakeRun(*args, **kwargs)
+            run = FakeRun(*args, **kwargs)
+            run.state.requested_model = "resolved-request"
+            run.state.requested_effort = "medium"
+            run.state.observed_model = "rerouted-model"
+            run.state.observed_effort = "high"
+            run.state.observed_route_reason = "capacity"
+            return run
         run = create_orchestrated_run(".", "planeje", "implemente", run_factory=factory)
         [message async for message in run.events()]
         self.assertEqual(run.state.agents["planning"]["input_tokens"], 10)
         self.assertEqual(run.state.agents["implementation"]["output_tokens"], 4)
+        implementation = run.state.agents["implementation"]
+        self.assertEqual((implementation["requested_model"], implementation["requested_effort"]),
+                         ("resolved-request", "medium"))
+        self.assertEqual((implementation["observed_model"], implementation["observed_effort"],
+                          implementation["observed_route_reason"]),
+                         ("rerouted-model", "high", "capacity"))
         self.assertIsNone(run.state.input_tokens)
         self.assertIsNone(run.state.output_tokens)
         self.assertIsNone(run.state.cached_input_tokens)
@@ -111,6 +123,33 @@ class OrchestrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(runs), 1)
         self.assertTrue(runs[0].cancelled)
         self.assertEqual(run.state.status, "interrupted")
+
+    async def test_cancelled_planning_never_constructs_implementation(self):
+        runs = []
+        def factory(*args, **kwargs):
+            run = FakeRun(*args, **kwargs)
+            released = asyncio.Event()
+            async def events():
+                run.state.status = "running"
+                yield "started"
+                await released.wait()
+                run.state.status = "interrupted"
+            async def cancel():
+                run.cancelled = True
+                released.set()
+            run.cancel = cancel
+            run.events = events
+            runs.append(run)
+            return run
+        run = create_orchestrated_run(".", "planeje", "implemente", run_factory=factory)
+        iterator = run.events()
+        await anext(iterator)
+        await run.cancel()
+        await anext(iterator)
+        await anext(iterator)
+        self.assertEqual(run.state.agents["planning"]["status"], "interrupted")
+        self.assertEqual(run.state.agents["implementation"]["status"], "cancelled")
+        self.assertEqual(len(runs), 1)
 
     async def test_plan_is_transferred_and_processes_closed(self):
         runs = []

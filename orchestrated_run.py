@@ -112,6 +112,15 @@ class OrchestratedRun:
                 agent["result"] = failure or (getattr(stage.state, "error", "") if stage else "") or (
                     stage.state.final[:180] if stage and terminal == "completed" else "")
                 if stage is not None:
+                    stage_state = stage.state
+                    for target, source in (("requested_model", "requested_model"),
+                                           ("requested_effort", "requested_effort"),
+                                           ("observed_model", "observed_model"),
+                                           ("observed_effort", "observed_effort"),
+                                           ("observed_route_reason", "observed_route_reason")):
+                        value = getattr(stage_state, source, None)
+                        if isinstance(value, str):
+                            agent[target] = value
                     for metric in ("input_tokens", "output_tokens", "cached_input_tokens"):
                         value = getattr(stage.state, metric, None)
                         if type(value) is int and value >= 0:

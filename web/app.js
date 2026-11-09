@@ -207,7 +207,10 @@
         technical.className = 'agent-technical'; technical.dataset.agent = id; technical.open = expanded.get(id) || false; summary.textContent = 'Detalhes';
         const stageUsage = [['Entrada', agent.input_tokens], ['Cache', agent.cached_input_tokens], ['Saída', agent.output_tokens]]
           .filter(([, value]) => Number.isInteger(value)).map(([label, value]) => `${label} ${Number(value).toLocaleString('pt-BR')}`);
-        detail.textContent = agent.role === 'Etapa' ? `Modelo solicitado: ${[agent.requested_model, agent.requested_effort].filter(Boolean).join(' / ')} · ${stageUsage.length ? stageUsage.join(' · ') + ' tokens' : 'métricas indisponíveis'}` : `Solicitado: ${[agent.requested_model, agent.requested_effort].filter(Boolean).join(' / ') || 'indisponível'} · Observado: ${[agent.observed_model || agent.model, agent.observed_effort || agent.effort].filter(Boolean).join(' / ') || 'indisponível'}`; technical.append(summary, detail); li.append(technical);
+        const requestedSettings = [agent.requested_model, agent.requested_effort].filter(Boolean).join(' / ') || 'indisponível';
+        const observedSettings = [agent.observed_model, agent.observed_effort].filter(Boolean).join(' / ');
+        const redirect = agent.observed_route_reason ? ` · Redirecionamento informado: ${agent.observed_route_reason}` : '';
+        detail.textContent = agent.role === 'Etapa' ? `Solicitado: ${requestedSettings} · Observado: ${observedSettings || 'indisponível'}${redirect} · ${stageUsage.length ? stageUsage.join(' · ') + ' tokens' : 'métricas indisponíveis'}` : `Solicitado: ${requestedSettings} · Observado: ${[agent.observed_model || agent.model, agent.observed_effort || agent.effort].filter(Boolean).join(' / ') || 'indisponível'}`; technical.append(summary, detail); li.append(technical);
       }
       $('agent-list').append(li);
     }
