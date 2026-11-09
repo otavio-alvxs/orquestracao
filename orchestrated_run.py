@@ -169,7 +169,13 @@ class OrchestratedRun:
     async def cancel(self):
         self.cancel_requested = True
         if self.active_run:
-            await self.active_run.cancel()
+            stage = self.active_run
+            try:
+                await stage.cancel()
+            finally:
+                # Orchestrated stages are disposable; close promptly even when
+                # interrupt does not produce turn/completed.
+                await stage.close()
 
     async def decide_approval(self, request_id: str, decision: str):
         if not self.active_run:

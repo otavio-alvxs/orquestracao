@@ -257,6 +257,8 @@ class AppServerRun:
             return
 
     async def events(self):
+        # Cancellation applies to one turn. The app-server thread remains reusable.
+        self.cancel_requested = False
         self._failure_message = "Não foi possível acompanhar o Codex app-server."
         self.state.started_at = time.monotonic()
         self.state.duration_seconds = None
@@ -409,22 +411,24 @@ class AppServerRun:
     async def cancel(self):
         self.cancel_requested = True
         await self.invalidate_approvals()
+        interrupted = False
         if self.process and self.thread_id and self.turn_id:
-            await self._interrupt_known_turn()
-        # The protocol may never emit turn/completed after an interrupt. Reap the
-        # child so the event consumer wakes and the orchestrator can finish.
-        if self.process:
+            interrupted = await self._interrupt_known_turn()
+        # Keep a responsive app-server alive so Direct mode can reuse its thread.
+        # If interrupt RPC fails, reap it so the event consumer can finish.
+        if self.process and not interrupted:
             await self.close()
         self.state.status = "interrupted"
         self.state.finish_timing()
 
     async def _interrupt_known_turn(self):
         if not (self.process and self.thread_id and self.turn_id):
-            return
+            return False
         try:
             await self._rpc("turn/interrupt", {"threadId": self.thread_id, "turnId": self.turn_id}, timeout=2)
+            return True
         except Exception:
-            pass
+            return False
 
     def _apply_usage_total(self, usage: object) -> None:
         if not isinstance(usage, dict):
