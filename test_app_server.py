@@ -253,6 +253,103 @@ for line in sys.stdin:
         await asyncio.wait_for(task, 2)
         self.assertEqual(self.run.state.status, "interrupted")
 
+    async def test_same_thread_continues_after_direct_cancel(self):
+        script = r'''import json,sys
+turns=0
+def send(x): print(json.dumps(x),flush=True)
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method'); i=m.get('id')
+ if method=='initialize': send({'id':i,'result':{}})
+ elif method=='thread/start': send({'id':i,'result':{'thread':{'id':'reusable-thread'}}})
+ elif method=='turn/start':
+  turns+=1; tid='reusable-turn-'+str(turns)
+  send({'id':i,'result':{'turn':{'id':tid}}})
+  if turns==2:
+   send({'method':'item/agentMessage/delta','params':{'threadId':'reusable-thread','turnId':tid,'delta':'continued'}})
+   send({'method':'turn/completed','params':{'threadId':'reusable-thread','turn':{'id':tid,'status':'completed'}}})
+ elif method=='turn/interrupt':
+  send({'id':i,'result':{}})
+  send({'method':'turn/completed','params':{'threadId':'reusable-thread','turn':{'id':'reusable-turn-1','status':'interrupted'}}})
+'''
+        async def factory(*args, **kwargs):
+            return await asyncio.create_subprocess_exec(sys.executable, "-u", "-c", script, **kwargs)
+        self.run = AppServerRun(str(self.root), "first", process_factory=factory)
+        first = asyncio.create_task(collect(self.run))
+        for _ in range(100):
+            if self.run.turn_id:
+                break
+            await asyncio.sleep(.01)
+        thread_id = self.run.thread_id
+        await self.run.cancel()
+        await asyncio.wait_for(first, 2)
+        self.assertEqual(self.run.state.status, "interrupted")
+        self.assertIsNone(self.run.process.returncode)
+
+        self.run.prompt = "second"
+        self.run.cancel_requested = False
+        await asyncio.wait_for(collect(self.run), 2)
+        self.assertEqual(self.run.thread_id, thread_id)
+        self.assertEqual(self.run.state.final, "continued")
+        self.assertEqual(self.run.state.status, "completed")
+
+    async def test_cancel_before_first_events_iteration_does_not_start_codex(self):
+        started = False
+
+        async def factory(*args, **kwargs):
+            nonlocal started
+            started = True
+            raise AssertionError("Codex não deveria ser iniciado após cancelamento")
+
+        self.run = AppServerRun(str(self.root), "cancel before start", process_factory=factory)
+        await self.run.cancel()
+        await asyncio.wait_for(collect(self.run), 1)
+
+        self.assertTrue(self.run.cancel_requested)
+        self.assertFalse(started)
+        self.assertIsNone(self.run.process)
+        self.assertEqual(self.run.state.status, "interrupted")
+
+    async def test_model_reroute_is_observed_from_protocol(self):
+        script = r'''import json,sys
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method'); i=m.get('id')
+ if method=='initialize': print(json.dumps({'id':i,'result':{}}),flush=True)
+ elif method=='thread/start': print(json.dumps({'id':i,'result':{'thread':{'id':'reroute-thread'}}}),flush=True)
+ elif method=='turn/start':
+  print(json.dumps({'id':i,'result':{'turn':{'id':'reroute-turn'}}}),flush=True)
+  print(json.dumps({'method':'model/rerouted','params':{'threadId':'reroute-thread','turnId':'reroute-turn','toModel':'observed-model','toEffort':'high','reason':'capacity'}}),flush=True)
+  print(json.dumps({'method':'turn/completed','params':{'threadId':'reroute-thread','turn':{'id':'reroute-turn','status':'completed'}}}),flush=True)
+'''
+        async def factory(*args, **kwargs):
+            return await asyncio.create_subprocess_exec(sys.executable, "-u", "-c", script, **kwargs)
+        self.run = AppServerRun(str(self.root), "reroute", process_factory=factory)
+        await asyncio.wait_for(collect(self.run), 2)
+        self.assertEqual((self.run.state.observed_model, self.run.state.observed_effort,
+                          self.run.state.observed_route_reason),
+                         ("observed-model", "high", "capacity"))
+
+    async def test_cancel_without_interrupt_rpc_response_reaps_child(self):
+        script = r'''import json,sys,time
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method'); i=m.get('id')
+ if method=='initialize': print(json.dumps({'id':i,'result':{}}),flush=True)
+ elif method=='thread/start': print(json.dumps({'id':i,'result':{'thread':{'id':'hang-thread'}}}),flush=True)
+ elif method=='turn/start': print(json.dumps({'id':i,'result':{'turn':{'id':'hang-turn'}}}),flush=True)
+ elif method=='turn/interrupt': time.sleep(30)
+'''
+        async def factory(*args, **kwargs):
+            return await asyncio.create_subprocess_exec(sys.executable, "-u", "-c", script, **kwargs)
+        self.run = AppServerRun(str(self.root), "cancel", process_factory=factory)
+        task = asyncio.create_task(collect(self.run))
+        for _ in range(200):
+            if self.run.turn_id:
+                break
+            await asyncio.sleep(.01)
+        await asyncio.wait_for(self.run.cancel(), 4)
+        await asyncio.wait_for(task, 2)
+        self.assertEqual(self.run.state.status, "interrupted")
+        self.assertIsNotNone(self.run.process.returncode)
+
     async def test_cancel_during_handshake_does_not_start_turn(self):
         script = r'''import json,sys,time
 for line in sys.stdin:

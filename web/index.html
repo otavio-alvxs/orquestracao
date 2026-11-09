@@ -37,6 +37,7 @@
         <label for="mode">MODO DE EXECUÇÃO</label>
         <div class="select-wrap"><select id="mode"><option value="reading">Leitura · sem alterações</option><option value="development">Desenvolvimento · pode alterar arquivos</option></select></div>
         <p id="mode-help" class="mode-help">Leitura usa sandbox readOnly.</p>
+        <div class="field task-field"><label for="workflow">FLUXO</label><div class="select-wrap"><select id="workflow"><option value="direct">Direta</option><option value="orchestrated">Orquestrada · Sol planeja, Luna implementa</option></select></div></div>
       </div>
       <label id="publish-option" class="publish-option hidden"><input id="publish-draft-pr" type="checkbox"> Autorizar criação de um Draft PR após esta tarefa, uma única vez. O Codex precisa criar um commit novo em feat/* e deixar a árvore de trabalho limpa.</label>
       <div class="field task-field">

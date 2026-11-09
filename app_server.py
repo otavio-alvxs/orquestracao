@@ -273,6 +273,11 @@ class AppServerRun:
         self.state.final = ""
         yield "Conectando ao Codex app-server."
         try:
+            if self.cancel_requested:
+                self.state.status = "interrupted"
+                self.state.finish_timing()
+                yield "Turno Codex interrupted."
+                return
             if not self.process:
                 await self._start()
             if self.cancel_requested:
@@ -333,7 +338,8 @@ class AppServerRun:
                     if event_thread != self.thread_id or event_turn != self.turn_id:
                         continue
                     self.state.observed_model = params.get("toModel") if isinstance(params.get("toModel"), str) else None
-                    self.state.observed_route_reason = str(params.get("reason", "sem motivo informado"))
+                    self.state.observed_effort = params.get("toEffort") if isinstance(params.get("toEffort"), str) else None
+                    self.state.observed_route_reason = params.get("reason") if isinstance(params.get("reason"), str) else None
                     continue
                 event_item = params.get("item")
                 if not self._collaboration_event_matches(event_item, event_thread, event_turn,
@@ -399,24 +405,33 @@ class AppServerRun:
                 yield method if isinstance(method, str) else "Evento Codex recebido."
         except Exception:
             await self.invalidate_approvals()
-            self.state.status = "failed"
-            self.state.error = self._failure_message
+            self.state.status = "interrupted" if self.cancel_requested else "failed"
+            self.state.error = "" if self.cancel_requested else self._failure_message
             self.state.finish_timing()
-            yield self.state.error
+            if self.state.error:
+                yield self.state.error
 
     async def cancel(self):
         self.cancel_requested = True
         await self.invalidate_approvals()
+        interrupted = False
         if self.process and self.thread_id and self.turn_id:
-            await self._interrupt_known_turn()
+            interrupted = await self._interrupt_known_turn()
+        # Keep a responsive app-server alive so Direct mode can reuse its thread.
+        # If interrupt RPC fails, reap it so the event consumer can finish.
+        if self.process and not interrupted:
+            await self.close()
+        self.state.status = "interrupted"
+        self.state.finish_timing()
 
     async def _interrupt_known_turn(self):
         if not (self.process and self.thread_id and self.turn_id):
-            return
+            return False
         try:
             await self._rpc("turn/interrupt", {"threadId": self.thread_id, "turnId": self.turn_id}, timeout=2)
+            return True
         except Exception:
-            pass
+            return False
 
     def _apply_usage_total(self, usage: object) -> None:
         if not isinstance(usage, dict):
@@ -564,10 +579,20 @@ class AppServerRun:
         if self.process:
             self.process.stdin.close()
             try:
-                await asyncio.wait_for(self.process.wait(), 2)
+                await asyncio.wait_for(self.process.wait(), .25 if self.cancel_requested else 2)
             except (asyncio.TimeoutError, ProcessLookupError):
-                self.process.terminate()
-                await self.process.wait()
+                try:
+                    self.process.terminate()
+                except ProcessLookupError:
+                    pass
+                try:
+                    await asyncio.wait_for(self.process.wait(), .5)
+                except asyncio.TimeoutError:
+                    try:
+                        self.process.kill()
+                    except ProcessLookupError:
+                        pass
+                    await self.process.wait()
         if self._reader:
             self._reader.cancel()
 

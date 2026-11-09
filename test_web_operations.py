@@ -10,6 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 from app_server import AppServerRun
+from orchestrated_run import OrchestratedRun
+from codex_runner import RunState
 from web_operations import OperationsServer, _publish_draft_pr, PublishError
 
 SUCCESS = '''import sys
@@ -98,6 +100,65 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first["prompt"], "recuperar")
         run.state.status = "completed"
         run.pending_approvals.clear()
+
+    async def test_orchestrated_snapshot_recovers_stages_and_events_after_reload(self):
+        self.app = OperationsServer([self.root])
+        run = OrchestratedRun(str(self.root), "implemente", "planeje")
+        run.state.status = "running"
+        run.state.agents["planning"]["status"] = "completed"
+        run.state.agents["implementation"]["status"] = "running"
+        self.app.session.run = run
+        self.app.session.engine = "app-server"
+        self.app.session.workflow = "orchestrated"
+        await self.app.session.emit("event", {"message": "Etapa iniciada: Implementação."})
+        snapshot = self.app._snapshot()
+        snapshot["events"] = list(self.app.session.events)
+        snapshot["cursor"] = self.app.session.next_event
+        self.assertEqual(snapshot["workflow"], "orchestrated")
+        self.assertEqual(snapshot["agents"]["planning"]["status"], "completed")
+        self.assertEqual(snapshot["agents"]["implementation"]["requested_model"], "Luna")
+        self.assertEqual(snapshot["events"][0][2]["message"], "Etapa iniciada: Implementação.")
+        planning = AppServerRun(str(self.root), "planejar", mode="reading")
+        planning.pending_approvals["approval"] = {"id": "approval", "type": "command"}
+        run.active_run = planning
+        run.pending_approvals = planning.pending_approvals
+        self.assertFalse(self.app._snapshot()["approvals"][0]["can_approve"])
+        planning.pending_approvals.clear()
+        run.active_run = None
+        run.state.status = "completed"
+
+    async def test_orchestrated_start_selection_and_draft_pr_block(self):
+        self.app = OperationsServer([self.root])
+        self.app._response = AsyncMock()
+        with patch.object(self.app, "_execute", new=AsyncMock()), patch("web_operations.create_orchestrated_run") as create:
+            create.return_value = OrchestratedRun(str(self.root), "tarefa", "planeje")
+            await self.app._start_run_locked({"prompt": "tarefa", "project": str(self.root),
+                                               "mode": "development", "engine": "app-server",
+                                               "workflow": "orchestrated", "publish_draft_pr": True}, None)
+            self.assertEqual(self.app._response.call_args.args[1], 400)
+            create.assert_not_called()
+            await self.app._start_run_locked({"prompt": "tarefa", "project": str(self.root),
+                                               "mode": "development", "engine": "app-server",
+                                               "workflow": "orchestrated"}, None)
+            self.assertEqual(self.app._response.call_args.args[1], 202)
+            create.assert_called_once()
+            self.assertEqual(self.app.session.workflow, "orchestrated")
+            self.assertIsInstance(self.app.session.run, OrchestratedRun)
+            if self.app.session.task:
+                self.app.session.task.cancel()
+                await asyncio.gather(self.app.session.task, return_exceptions=True)
+            direct = SimpleNamespace(cwd=str(self.root), prompt="tarefa", state=RunState(),
+                                     changed_files=set(), thread_id=None)
+            with patch("web_operations.CodexRun", return_value=direct) as direct_factory:
+                await self.app._start_run_locked({"prompt": "tarefa", "project": str(self.root)}, None)
+                self.assertEqual(self.app._response.call_args.args[1], 202)
+                direct_factory.assert_called_once()
+                self.assertEqual(self.app.session.workflow, "direct")
+                self.assertIs(self.app.session.run, direct)
+                if self.app.session.task:
+                    self.app.session.task.cancel()
+                    await asyncio.gather(self.app.session.task, return_exceptions=True)
+                self.app.session.run = None
 
     async def test_start_gate_blocks_second_run_and_maintenance(self):
         self.app = OperationsServer([self.root])
