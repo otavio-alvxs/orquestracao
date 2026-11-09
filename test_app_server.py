@@ -286,10 +286,28 @@ for line in sys.stdin:
         self.assertIsNone(self.run.process.returncode)
 
         self.run.prompt = "second"
+        self.run.cancel_requested = False
         await asyncio.wait_for(collect(self.run), 2)
         self.assertEqual(self.run.thread_id, thread_id)
         self.assertEqual(self.run.state.final, "continued")
         self.assertEqual(self.run.state.status, "completed")
+
+    async def test_cancel_before_first_events_iteration_does_not_start_codex(self):
+        started = False
+
+        async def factory(*args, **kwargs):
+            nonlocal started
+            started = True
+            raise AssertionError("Codex não deveria ser iniciado após cancelamento")
+
+        self.run = AppServerRun(str(self.root), "cancel before start", process_factory=factory)
+        await self.run.cancel()
+        await asyncio.wait_for(collect(self.run), 1)
+
+        self.assertTrue(self.run.cancel_requested)
+        self.assertFalse(started)
+        self.assertIsNone(self.run.process)
+        self.assertEqual(self.run.state.status, "interrupted")
 
     async def test_model_reroute_is_observed_from_protocol(self):
         script = r'''import json,sys

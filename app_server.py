@@ -257,8 +257,6 @@ class AppServerRun:
             return
 
     async def events(self):
-        # Cancellation applies to one turn. The app-server thread remains reusable.
-        self.cancel_requested = False
         self._failure_message = "Não foi possível acompanhar o Codex app-server."
         self.state.started_at = time.monotonic()
         self.state.duration_seconds = None
@@ -275,6 +273,11 @@ class AppServerRun:
         self.state.final = ""
         yield "Conectando ao Codex app-server."
         try:
+            if self.cancel_requested:
+                self.state.status = "interrupted"
+                self.state.finish_timing()
+                yield "Turno Codex interrupted."
+                return
             if not self.process:
                 await self._start()
             if self.cancel_requested:
