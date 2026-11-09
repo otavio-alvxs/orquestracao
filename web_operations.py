@@ -27,7 +27,7 @@ from codex_runner import CodexRun, validate_project
 from app_server import AppServerRun
 from orchestrated_run import create_orchestrated_run, OrchestratedRun
 from rate_limits import RateLimitMonitor
-from task_routing import select_route, escalate_route
+from task_routing import select_route, automatic_workflow, escalate_route
 
 HOST = "127.0.0.1"
 MAX_BODY = 70 * 1024
@@ -320,6 +320,10 @@ class Session:
     publish_baseline: str | None = None
     publish_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     publish_task: asyncio.Task | None = None
+    workflow: str = "direct"
+    effective_workflow: str = "direct"
+    workflow_reason: str = ""
+    requested_profile: str = "auto"
 
     async def emit(self, kind: str, data: dict) -> None:
         async with self.changed:
@@ -621,13 +625,13 @@ class OperationsServer:
             await self._response(writer, 400, b"Publicacao disponivel somente em Desenvolvimento")
             return
         workflow = payload.get("workflow", "direct")
-        if workflow not in ("direct", "orchestrated"):
+        if workflow not in ("direct", "orchestrated", "automatic"):
             await self._response(writer, 400, b"Fluxo de execucao invalido")
             return
-        if workflow == "orchestrated" and (mode != "development" or payload.get("engine", "exec") != "app-server"):
+        if workflow in ("orchestrated", "automatic") and (mode != "development" or payload.get("engine", "exec") != "app-server"):
             await self._response(writer, 400, b"O fluxo orquestrado exige Desenvolvimento e Codex app-server")
             return
-        if workflow == "orchestrated" and publish:
+        if workflow in ("orchestrated", "automatic") and publish:
             await self._response(writer, 400, b"Draft PR indisponivel para execucao orquestrada")
             return
         if publish and Path(project).resolve() != PUBLISH_PROJECT.resolve():
@@ -659,13 +663,19 @@ class OperationsServer:
             if not isinstance(profile, str):
                 await self._response(writer, 400, b"Perfil de roteamento inv\xc3\xa1lido")
                 return
-            route = select_route(prompt, profile)
+            route = select_route(prompt, "auto" if workflow == "automatic" else profile)
+            effective_workflow, workflow_reason = ((automatic_workflow(route) if workflow == "automatic" else
+                                                     (workflow, route.reason)))
             if engine == "app-server":
-                if workflow == "orchestrated":
-                    run = create_orchestrated_run(project, "Produza um plano objetivo de implementação, riscos e verificações.",
+                if effective_workflow == "orchestrated":
+                    planning_prompt = ("Produza um plano objetivo de implementação, riscos e verificações."
+                                       if workflow == "orchestrated" else
+                                       "Produza um plano de implementação com no máximo 8 linhas. Preserve arquivos/decisões necessários, riscos e verificações; registre incertezas relevantes. Evite resumo da tarefa e contexto que já esteja explícito.")
+                    run = create_orchestrated_run(project, planning_prompt,
                                                   prompt, codex=self.codex, process_factory=self.process_factory)
                 else:
-                    run = AppServerRun(project, prompt, mode=mode, profile=profile, **kwargs)
+                    run = AppServerRun(project, prompt, mode=mode,
+                                       profile="auto" if workflow == "automatic" else profile, **kwargs)
                     run.route_override = route
                     run.state.escalations = [route.reason] if payload.get("escalate") else []
             else:
@@ -698,6 +708,9 @@ class OperationsServer:
         self.session.publish_baseline = publish_baseline
         self.session.engine = engine
         self.session.workflow = workflow
+        self.session.effective_workflow = effective_workflow
+        self.session.workflow_reason = workflow_reason
+        self.session.requested_profile = "auto" if workflow == "automatic" else profile
         self.session.task = asyncio.create_task(self._execute(run))
         if engine == "app-server":
             await self.session.emit("message", {"role": "user", "text": prompt})
@@ -859,6 +872,10 @@ class OperationsServer:
                 "escalations": state.escalations,
                 "thread_id": getattr(run, "thread_id", None), "agents": agents,
                 "workflow": getattr(self.session, "workflow", "direct"),
+                "requested_workflow": getattr(self.session, "workflow", "direct"),
+                "effective_workflow": getattr(self.session, "effective_workflow", "direct"),
+                "workflow_reason": getattr(self.session, "workflow_reason", ""),
+                "requested_profile": getattr(self.session, "requested_profile", "auto"),
                 "mode": getattr(run, "mode", "reading"), "approvals": approvals,
                 "changed_files": sorted(getattr(run, "changed_files", set())),
                 "publish_authorized": self.session.publish_authorized,

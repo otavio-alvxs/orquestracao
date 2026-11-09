@@ -1,5 +1,38 @@
 # Roteamento por tarefa — v0.16 / Missão 024
 
+## v0.20 — fluxo opt-in Automática · Econômica
+
+Na Central, `workflow=automatic` usa `profile=auto` e o mesmo roteador
+determinístico. Tarefas `simple` e `intermediate` seguem em execução única
+Luna/low ou Luna/medium; `complex`, ambíguas, desconhecidas ou com sinais de
+risco seguem pela orquestração Sol/medium → Luna/medium. A decisão não chama
+outro modelo. O perfil continua heurístico, sem garantia semântica de risco.
+
+Uma forma adicional reconhecida como `intermediate` é a criação de exatamente
+dois arquivos Python correspondentes (`modulo.py` e `test_modulo.py`), com
+retorno literal especificado, verificação `unittest` e pedido para executar só
+esse teste. A regra é estrutural, não vinculada a nomes de arquivo. Builds com
+comportamento vago, mais arquivos, testes sem relação explícita ou outro runner
+permanecem conservadores; esta pequena regra não generaliza para todo par de
+implementação e teste.
+
+O modo exige Desenvolvimento e app-server, como a orquestração atual. A Central
+expõe fluxo pedido, fluxo efetivo e motivo, além das métricas nativas disponíveis.
+Métricas orquestradas permanecem por etapa; o total agregado não é apresentado
+porque pode duplicar uso cumulativo entre threads. Direta e Orquestrada continuam
+seleções manuais separadas. Draft PR permanece incompatível com orquestração;
+cancelamento, aprovações, sandbox e sessão efêmera permanecem nos contratos dos
+executores existentes.
+
+No fluxo automático que chega à orquestração, a instrução ao planejador limita o
+plano a oito linhas e pede decisões/arquivos, riscos, verificações e incertezas.
+Isso reduz o texto explicitamente transferido sem remover a tarefa original ou
+adicionar chamada. Não mede economia real de contexto.
+
+Uma avaliação offline pequena cobre tarefa simples, intermediária, ambígua e de
+alto risco, além de contratos HTTP de escolha e observabilidade. É sintética:
+não valida qualidade do modelo, custo, economia de tokens ou acurácia em produção.
+
 ## Capacidade nativa verificada
 
 Inspeção local em 2026-11-06 com Codex CLI **0.167.0**:
