@@ -67,6 +67,12 @@
       <div class="run-actions"><button id="cancel" class="cancel">Cancelar execução</button><button id="new-task" class="new-task hidden">Nova tarefa <span>↗</span></button></div>
       <details class="events"><summary><span>Eventos técnicos</span><span id="event-count">0 eventos</span></summary><ol id="event-list"></ol></details>
     </section>
+    <details class="events"><summary>Manutenção LIVE</summary>
+      <pre id="maintenance-status" class="hint">Consultando…</pre>
+      <button id="maintenance-restart" class="new-task" disabled>Reiniciar LIVE</button>
+      <button id="maintenance-update" class="new-task" hidden>Atualizar e reiniciar LIVE</button>
+      <p class="hint">Sessões em memória serão perdidas. Agendamento não confirma conclusão. Instalação: MAINTENANCE.md.</p>
+    </details>
     <footer class="footnote"><span><i></i> Local neste dispositivo</span><span>Prompts e respostas não são salvos</span></footer>
   </main>
 </body>

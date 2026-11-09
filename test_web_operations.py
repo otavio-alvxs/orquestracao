@@ -73,6 +73,43 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
         self.monitor_patch.stop()
         self.temp.cleanup()
 
+    async def test_reload_session_snapshot_and_cursor(self):
+        self.app = OperationsServer([self.root])
+        run = AppServerRun(str(self.root), "recuperar", mode="development")
+        run.state.status = "running"
+        run.state.agents = {"child": {"status": "running"}}
+        run.pending_approvals["approval"] = {"id": "approval", "type": "command"}
+        self.app.session.run = run
+        self.app.session.engine = "app-server"
+        self.app.session.publish_authorized = True
+        await self.app.session.emit("message", {"role": "user", "text": "recuperar"})
+        port = await self.app.start(0)
+        auth = {"X-CSRF-Token": self.app.session.token}
+        self.assertEqual((await http(port, "GET", "/api/session"))[0], 403)
+        first = json.loads((await http(port, "GET", "/api/session", auth))[2])
+        second = json.loads((await http(port, "GET", "/api/session", auth))[2])
+        self.assertEqual(first["cursor"], second["cursor"])
+        self.assertEqual(first["events"], second["events"])
+        self.assertEqual(first["project"], next(iter(self.app.project_catalog())))
+        self.assertEqual(first["engine"], "app-server")
+        self.assertEqual(first["agents"]["child"]["status"], "running")
+        self.assertEqual(first["approvals"][0]["id"], "approval")
+        self.assertTrue(first["publish_authorized"])
+        self.assertEqual(first["prompt"], "recuperar")
+        run.state.status = "completed"
+        run.pending_approvals.clear()
+
+    async def test_start_gate_blocks_second_run_and_maintenance(self):
+        self.app = OperationsServer([self.root])
+        self.app._response = AsyncMock()
+        async with self.app.run_start_lock:
+            self.assertTrue(self.app.maintenance_busy())
+            await self.app._start_run({"prompt": "second", "project": str(self.root)}, None)
+            self.assertEqual(self.app._response.call_args.args[1], 409)
+            await self.app._continue_run({"prompt": "second"}, None)
+            self.assertEqual(self.app._response.call_args.args[1], 409)
+        self.assertIsNone(self.app.session.run)
+
     def test_publisher_real_git_snapshot_offline(self):
         git = shutil.which("git")
         if not git:
@@ -398,7 +435,7 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
         checkbox = html.split('id="publish-draft-pr"', 1)[1].split(">", 1)[0]
         self.assertNotIn(" checked", checkbox)
         self.assertIn("O Codex precisa criar um commit novo em feat/* e deixar a árvore de trabalho limpa.", html)
-        self.assertIn("if (!dev) $('publish-draft-pr').checked = false;", js)
+        self.assertIn("if (!dev || !publicationAllowed()) $('publish-draft-pr').checked = false;", js)
         self.assertIn("$('publish-draft-pr').checked = false;", js)
 
     async def test_continue_consumes_publish_authorization(self):
