@@ -13,6 +13,10 @@ from codex_runner import RunState, validate_project
 from task_routing import Route, select_route, escalate_route
 
 
+_EVENT_IDLE_TIMEOUT = 120
+_PROCESS_POLL_INTERVAL = 1
+
+
 @dataclass
 class AppServerRun:
     cwd: str
@@ -79,6 +83,23 @@ class AppServerRun:
         if "error" in response:
             raise RuntimeError("Codex app-server rejeitou uma solicitação.")
         return response.get("result", {})
+
+    async def _next_notification(self):
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + _EVENT_IDLE_TIMEOUT
+        while True:
+            try:
+                return await asyncio.wait_for(self._notifications.get(), _PROCESS_POLL_INTERVAL)
+            except asyncio.TimeoutError:
+                if (self._closed or not self.process or self.process.returncode is not None or
+                        not self._reader or self._reader.done() or
+                        self.process.stdin.is_closing()):
+                    raise RuntimeError("Conexão app-server encerrada.")
+                # Human response time is unbounded, but process/transport health is not.
+                if self.pending_approvals:
+                    deadline = loop.time() + _EVENT_IDLE_TIMEOUT
+                elif loop.time() >= deadline:
+                    raise
 
     async def _read(self):
         failure = RuntimeError("Conexão app-server encerrada.")
@@ -319,7 +340,7 @@ class AppServerRun:
             if self.cancel_requested:
                 await self._interrupt_known_turn()
             while True:
-                event = await asyncio.wait_for(self._notifications.get(), 120)
+                event = await self._next_notification()
                 method, params = event.get("method"), event.get("params", {})
                 if method.startswith("_transport/"):
                     raise RuntimeError("Conexão app-server encerrada.")
