@@ -33,6 +33,7 @@ class AppServerRun:
     _failure_message: str = "Não foi possível acompanhar o Codex app-server."
     cancel_requested: bool = False
     _message_parts: dict[str, str] = field(default_factory=dict)
+    _message_phases: dict[str, str | None] = field(default_factory=dict)
     pending_approvals: dict[str, dict] = field(default_factory=dict)
     _approval_by_rpc: dict[object, str] = field(default_factory=dict)
     _early_requests: list[dict] = field(default_factory=list)
@@ -270,6 +271,7 @@ class AppServerRun:
         self._agent_terminal_time.clear()
         self._collab_call_ids.clear()
         self._message_parts.clear()
+        self._message_phases.clear()
         self.state.final = ""
         yield "Conectando ao Codex app-server."
         try:
@@ -369,6 +371,7 @@ class AppServerRun:
                         item_id = item.get("id")
                         key = item_id if isinstance(item_id, str) else "__message__"
                         self._message_parts[key] = item["text"]
+                        self._message_phases[key] = item.get("phase") if isinstance(item_id, str) else None
                         self._refresh_final()
                     if item.get("type") in ("collabAgentToolCall", "collab_agent_tool_call"):
                         self._observe_agents(item)
@@ -458,6 +461,20 @@ class AppServerRun:
 
     def _refresh_final(self):
         self.state.final = "\n\n".join(text for text in self._message_parts.values() if text)
+
+    @property
+    def handoff_text(self) -> str:
+        """Select completed final answers without changing the UI transcript.
+
+        Codex 0.167.0's ItemCompletedNotification schema makes phase nullable;
+        deltas have no phase. Unknown or mixed metadata keeps legacy behavior.
+        """
+        if not self._message_parts or any(
+                self._message_phases.get(key) not in ("commentary", "partial_answer", "final_answer")
+                for key in self._message_parts):
+            return self.state.final
+        return "\n\n".join(text for key, text in self._message_parts.items()
+                           if self._message_phases[key] == "final_answer" and text)
 
     @staticmethod
     def _collaboration_event_matches(item: dict, thread_id, turn_id, expected_thread, expected_turn) -> bool:

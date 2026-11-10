@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from app_server import AppServerRun
+from orchestrated_run import create_orchestrated_run
 from codex_runner import build_command
 from web_operations import OperationsServer
 
@@ -136,6 +137,76 @@ for line in sys.stdin:
         events = await asyncio.wait_for(collect(run), 3)
         self.assertEqual(events.count("item/agentMessage/delta"), 2)
         self.assertEqual(run.state.status, "completed")
+
+    async def test_phase_aware_planning_handoff_preserves_transcript_and_task(self):
+        # Exercise the real parser and orchestrator using only a synthetic server.
+        cases = (
+            ("classified", {"phase": "commentary"}, {"phase": "final_answer"}, "answer-1"),
+            ("legacy", {}, {}, "commentary\n\nanswer-1"),
+            ("null", {"phase": None}, {"phase": None}, "commentary\n\nanswer-1"),
+            ("mixed", {}, {"phase": "final_answer"}, "commentary\n\nanswer-1"),
+            ("unknown", {"phase": "future_phase"}, {"phase": "final_answer"}, "commentary\n\nanswer-1"),
+            ("partial_then_final", {"phase": "partial_answer"}, {"phase": "final_answer"}, "answer-1"),
+            ("no_final", {"phase": "commentary"}, {"phase": "partial_answer"}, ""),
+            ("empty_final", {"phase": "commentary"}, {"phase": "final_answer"}, "  "),
+            ("unfinished_item", {"phase": "commentary"}, {"phase": "final_answer"}, "commentary\n\nanswer-1"),
+        )
+        for name, commentary, final, expected in cases:
+            with self.subTest(name=name):
+                script = FAKE_SERVER.replace(
+                    "m['params']['sandbox']=='read-only'", "m['params']['sandbox'] in ('read-only','workspace-write')")
+                script = script.replace("'text':'commentary'", "'text':'commentary',**" + repr(commentary))
+                script = script.replace("'text':text", "'text':text,**" + repr(final))
+                if name == "empty_final":
+                    script = script.replace("text='answer-'+str(turns)", "text='  '")
+                if name == "unfinished_item":
+                    script = "\n".join(line for line in script.splitlines()
+                                       if not ("'method':'item/completed'" in line and "'msg-final'" in line))
+
+                async def process_factory(*args, **kwargs):
+                    return await asyncio.create_subprocess_exec(sys.executable, "-u", "-c", script, **kwargs)
+
+                stages = []
+                def run_factory(*args, **kwargs):
+                    stage = AppServerRun(*args, **kwargs)
+                    stages.append(stage)
+                    return stage
+
+                task = "Tarefa integral\ncom decisões, riscos e verificações."
+                run = create_orchestrated_run(str(self.root), "planeje", task,
+                                             process_factory=process_factory, run_factory=run_factory)
+                await asyncio.wait_for(collect(run), 5)
+                self.assertEqual(stages[0].handoff_text, expected)
+                transcript = "commentary\n\n" + ("  " if name == "empty_final" else "answer-1")
+                self.assertEqual(stages[0].state.final, transcript)
+                self.assertEqual(stages[0].state.input_tokens, 20)
+                if expected.strip():
+                    self.assertEqual(len(stages), 2)
+                    self.assertEqual(stages[1].prompt,
+                                     "Implemente a tarefa original seguindo o plano abaixo.\n\n"
+                                     f"Tarefa original:\n{task}\n\nPlano produzido por Sol:\n{expected}")
+                    self.assertEqual(run.state.status, "completed")
+                else:
+                    self.assertEqual(len(stages), 1)
+                    self.assertEqual(run.state.agents["implementation"]["status"], "blocked")
+                    self.assertEqual(run.state.status, "failed")
+                # The Central continues to expose the original aggregate response.
+                app = OperationsServer([self.root])
+                app.session.run = run
+                self.assertEqual(app._snapshot()["result"], run.state.final)
+                self.assertEqual(run.state.final, stages[-1].state.final)
+
+    async def test_handoff_phase_metadata_is_reset_on_continuation(self):
+        script = FAKE_SERVER.replace("'text':'commentary'", "'text':'commentary','phase':'commentary'")
+        script = script.replace("'text':text", "'text':text,'phase':('final_answer' if turns == 1 else None)")
+        async def factory(*args, **kwargs):
+            return await asyncio.create_subprocess_exec(sys.executable, "-u", "-c", script, **kwargs)
+        self.run = AppServerRun(str(self.root), "first", process_factory=factory)
+        await asyncio.wait_for(collect(self.run), 3)
+        self.assertEqual(self.run.handoff_text, "answer-1")
+        self.run.prompt = "continue"
+        await asyncio.wait_for(collect(self.run), 3)
+        self.assertEqual(self.run.handoff_text, "commentary\n\nanswer-2")
 
     async def test_usage_regression_and_unknown_baseline_are_unavailable(self):
         run = await self.make_run("Inspect")

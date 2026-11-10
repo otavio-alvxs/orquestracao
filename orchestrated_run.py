@@ -45,12 +45,14 @@ class OrchestratedRun:
                 if self.cancel_requested:
                     break
                 if key == "implementation":
+                    plan = (getattr(self.planning, "handoff_text", self.planning.state.final)
+                            if self.planning is not None else "")
                     if (self.state.agents["planning"]["status"] != "completed" or self.planning is None or
-                            not self.planning.state.final.strip()):
+                            not plan.strip()):
                         self.state.agents["implementation"]["status"] = "blocked"
                         break
                     task_prompt = ("Implemente a tarefa original seguindo o plano abaixo.\n\n"
-                                   f"Tarefa original:\n{self.prompt}\n\nPlano produzido por Sol:\n{self.planning.state.final}")
+                                   f"Tarefa original:\n{self.prompt}\n\nPlano produzido por Sol:\n{plan}")
                 else:
                     task_prompt = f"{self.planning_prompt}\n\nTarefa original:\n{self.prompt}"
                 stage = None
