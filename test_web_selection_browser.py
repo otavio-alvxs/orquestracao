@@ -1,5 +1,14 @@
-import http.server, threading, subprocess, json, html, pathlib, tempfile
-root=pathlib.Path.cwd(); result=[]
+import html
+import http.server
+import json
+import pathlib
+import shutil
+import subprocess
+import tempfile
+import threading
+import unittest
+
+root = pathlib.Path(__file__).resolve().parent
 state={'status':'completed','project':'a','project_name':'A','mode':'development','workflow':'direct','engine':'app-server','requested_profile':'simple','thread_id':'old','events':[],'cursor':0}
 script='''
 let controller; const calls=[]; const old=STATE;
@@ -27,17 +36,53 @@ async function test(){
 window.addEventListener('load',()=>test().then(x=>report(x)).catch(e=>report('FAIL '+e.stack)));
 function report(x){navigator.sendBeacon('/result',x)}
 '''.replace('STATE',json.dumps(state))
-class Handler(http.server.BaseHTTPRequestHandler):
- def log_message(self,*a): pass
- def do_GET(self):
-  if self.path=='/app.js': data=(root/'web/app.js').read_bytes(); typ='text/javascript'
-  else:
-   data=(root/'web/index.html').read_text().replace('__CSRF__','test').replace('__PROJECTS_HTML__',html.escape(json.dumps([{'id':x,'name':x,'publish':True} for x in 'abc']),quote=True)).replace('<script src="/app.js" defer></script>','<script>'+script+'</script><script src="/app.js" defer></script>').encode(); typ='text/html'
-  self.send_response(200); self.send_header('Content-Type',typ); self.end_headers(); self.wfile.write(data)
- def do_POST(self):
-  result.append(self.rfile.read(int(self.headers['Content-Length'])).decode()); self.send_response(200); self.end_headers()
-s=http.server.HTTPServer(('127.0.0.1',0),Handler); threading.Thread(target=s.serve_forever,daemon=True).start()
-with tempfile.TemporaryDirectory() as profile:
- p=subprocess.Popen(['firefox','--headless','--no-remote','--profile',profile,f'http://127.0.0.1:{s.server_port}/'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
- threading.Event().wait(8); p.terminate(); p.wait(timeout=10)
-s.shutdown(); print(result); assert result==['a,b,c']
+class WebSelectionBrowserTests(unittest.TestCase):
+ def test_project_selection_survives_state_updates(self):
+  firefox = shutil.which('firefox')
+  if not firefox:
+   self.skipTest('Firefox não está disponível no PATH')
+
+  result = []
+  received = threading.Event()
+
+  class Handler(http.server.BaseHTTPRequestHandler):
+   def log_message(self, *args): pass
+
+   def do_GET(self):
+    if self.path == '/app.js':
+     data = (root / 'web/app.js').read_bytes(); typ = 'text/javascript'
+    else:
+     data = (root / 'web/index.html').read_text().replace('__CSRF__', 'test').replace('__PROJECTS_HTML__', html.escape(json.dumps([{'id': x, 'name': x, 'publish': True} for x in 'abc']), quote=True)).replace('<script src="/app.js" defer></script>', '<script>' + script + '</script><script src="/app.js" defer></script>').encode(); typ = 'text/html'
+    self.send_response(200); self.send_header('Content-Type', typ); self.end_headers(); self.wfile.write(data)
+
+   def do_POST(self):
+    result.append(self.rfile.read(int(self.headers['Content-Length'])).decode())
+    self.send_response(200); self.end_headers()
+    received.set()
+
+  server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+  server.daemon_threads = True
+  thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.1}, daemon=True)
+  try:
+   thread.start()
+   with tempfile.TemporaryDirectory() as profile:
+    process = subprocess.Popen([firefox, '--headless', '--no-remote', '--profile', profile, f'http://127.0.0.1:{server.server_port}/'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+     self.assertTrue(received.wait(8), 'Firefox não enviou o resultado em 8 segundos')
+     self.assertEqual(result, ['a,b,c'])
+    finally:
+     process.terminate()
+     try:
+      process.wait(timeout=5)
+     except subprocess.TimeoutExpired:
+      process.kill()
+      process.wait(timeout=5)
+  finally:
+   if thread.is_alive():
+    server.shutdown()
+    thread.join(timeout=5)
+   server.server_close()
+
+
+if __name__ == '__main__':
+ unittest.main()
