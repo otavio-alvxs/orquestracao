@@ -5,7 +5,7 @@
   const project = $('project'), prompt = $('prompt'), start = $('start'), mode = $('mode'), profile = $('profile'), workflow = $('workflow');
   const statusText = { idle: 'Aguardando', starting: 'Preparando execução', running: 'Em andamento', completed: 'Concluída', failed: 'Falhou', interrupted: 'Cancelada' };
   let lastId = 0, active = true, streamPromise = null;
-  let quotaSnapshot = null;
+  let quotaSnapshot = null, drafting = false;
   const quotaFreshnessSeconds = 180;
   setInterval(() => { if (quotaSnapshot) renderQuotas(quotaSnapshot); }, 30000);
   projects.forEach((item) => { const option = document.createElement('option'); option.value = item.id; option.textContent = item.name; project.append(option); });
@@ -47,6 +47,7 @@
     return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(body) });
   }
   function render(state) {
+    if (drafting) return;
     if (Object.hasOwn(state, 'rate_limits')) renderQuotas(state.rate_limits);
     const status = state.status || 'idle';
     active = Boolean(state.busy) || ['starting', 'running'].includes(status);
@@ -79,7 +80,7 @@
     $('result').textContent = state.result || '';
     if (state.mode === 'development') $('effective-mode').textContent = 'Desenvolvimento · workspaceWrite';
     else if (state.mode === 'reading') $('effective-mode').textContent = 'Leitura · readOnly';
-    lockSelection(['starting', 'running'].includes(status) || Boolean(state.thread_id));
+    lockSelection(active || Boolean(state.thread_id));
     renderApprovals(state.approvals || []);
     $('publish-panel').classList.toggle('hidden', !state.publish_authorized && !state.publish_attempted && !state.publish_result);
     $('publish-status').textContent = state.publish_result || (state.publish_authorized ? 'Publicação de Draft PR autorizada ao concluir.' : '');
@@ -260,6 +261,7 @@
   start.addEventListener('click', async () => {
     const task = prompt.value; if (!task.trim() || active) return;
     $('approval-feedback').textContent = ''; $('approval-feedback').classList.add('hidden');
+    drafting = false;
     active = true; $('event-list').replaceChildren(); $('event-count').textContent = '0 eventos';
     $('execution').classList.remove('hidden'); $('run-title').textContent = task;
     $('conversation').replaceChildren(); $('session-id').classList.add('hidden');
@@ -303,6 +305,7 @@
     finally { $('escalate').disabled = false; }
   });
   $('new-task').addEventListener('click', () => {
+    drafting = true;
     prompt.value = ''; prompt.dispatchEvent(new Event('input')); prompt.focus(); $('execution').classList.add('hidden');
     $('approval-feedback').textContent = ''; $('approval-feedback').classList.add('hidden'); lockSelection(false);
   });

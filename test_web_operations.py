@@ -520,13 +520,108 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(gh_calls, [])
 
     def test_publish_checkbox_is_opt_in_and_reset_after_mode_change_and_submission(self):
+        import html as html_module
+        import http.server
+        import threading
+
         html = (Path(__file__).with_name("web") / "index.html").read_text()
-        js = (Path(__file__).with_name("web") / "app.js").read_text()
         checkbox = html.split('id="publish-draft-pr"', 1)[1].split(">", 1)[0]
         self.assertNotIn(" checked", checkbox)
         self.assertIn("O Codex precisa criar um commit novo em feat/* e deixar a árvore de trabalho limpa.", html)
-        self.assertIn("if (!dev || !publicationAllowed()) $('publish-draft-pr').checked = false;", js)
-        self.assertIn("$('publish-draft-pr').checked = false;", js)
+        firefox = shutil.which("firefox")
+        if not firefox:
+            self.skipTest("Firefox não está disponível no PATH")
+
+        script = r'''
+        const requests = [];
+        window.fetch = async (url, options = {}) => {
+          if (url === '/api/session') return new Response(JSON.stringify({status: 'idle', events: [], cursor: 0}));
+          if (url === '/api/events') return new Response(new ReadableStream({start() {}}));
+          if (url === '/api/run') requests.push(JSON.parse(options.body));
+          return new Response('{}');
+        };
+        window.addEventListener('load', async () => {
+          const el = id => document.getElementById(id);
+          const change = id => el(id).dispatchEvent(new Event('change'));
+          const check = (condition, message) => { if (!condition) throw Error(message); };
+          try {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            const box = el('publish-draft-pr');
+            check(!box.checked, 'publication must be opt-in');
+            el('project').value = 'allowed'; change('project');
+            el('mode').value = 'development'; change('mode');
+            check(!el('publish-option').classList.contains('hidden'), 'direct development should allow publication');
+            for (const flow of ['automatic', 'orchestrated']) {
+              box.checked = true; el('workflow').value = flow; change('workflow');
+              check(!box.checked && el('publish-option').classList.contains('hidden'), flow + ' must clear publication');
+              el('workflow').value = 'direct'; change('workflow');
+            }
+            box.checked = true; el('mode').value = 'reading'; change('mode');
+            check(!box.checked && el('publish-option').classList.contains('hidden'), 'reading must clear publication');
+            el('mode').value = 'development'; change('mode');
+            box.checked = true; el('project').value = 'denied'; change('project');
+            check(!box.checked && el('publish-option').classList.contains('hidden'), 'disallowed project must clear publication');
+            el('project').value = 'allowed'; change('project');
+            box.checked = true; el('prompt').value = 'task'; el('start').click();
+            await new Promise(resolve => setTimeout(resolve, 100));
+            check(requests.length === 1 && requests[0].publish_draft_pr === true, 'submission must send opt-in');
+            check(!box.checked, 'submission must clear publication');
+            navigator.sendBeacon('/result', 'ok');
+          } catch (error) { navigator.sendBeacon('/result', error.stack); }
+        });
+        '''
+        projects = html_module.escape(json.dumps([
+            {"id": "allowed", "name": "allowed", "publish": True},
+            {"id": "denied", "name": "denied", "publish": False},
+        ]), quote=True)
+        page = (html.replace('__CSRF__', 'test').replace('__PROJECTS_HTML__', projects)
+                .replace('<script src="/app.js" defer></script>',
+                         '<script>' + script + '</script><script src="/app.js" defer></script>'))
+        result = []
+        received = threading.Event()
+        js = (Path(__file__).with_name("web") / "app.js").read_bytes()
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                data = js if self.path == '/app.js' else page.encode()
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/javascript' if self.path == '/app.js' else 'text/html')
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_POST(self):
+                result.append(self.rfile.read(int(self.headers['Content-Length'])).decode())
+                self.send_response(200)
+                self.end_headers()
+                received.set()
+
+        server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.1}, daemon=True)
+        try:
+            thread.start()
+            with tempfile.TemporaryDirectory() as profile:
+                process = subprocess.Popen([firefox, '--headless', '--no-remote', '--profile', profile,
+                                            f'http://127.0.0.1:{server.server_port}/'],
+                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    self.assertTrue(received.wait(8), 'Firefox não enviou o resultado em 8 segundos')
+                    self.assertEqual(result, ['ok'])
+                finally:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+        finally:
+            if thread.is_alive():
+                server.shutdown()
+                thread.join(timeout=5)
+            server.server_close()
 
     async def test_continue_consumes_publish_authorization(self):
         self.app = OperationsServer([self.root])
