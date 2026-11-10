@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from app_server import AppServerRun
 from orchestrated_run import create_orchestrated_run
@@ -526,6 +527,102 @@ for line in sys.stdin:
         self.assertEqual(AppServerRun(str(self.root), 'inspect').mode, 'reading')
         with self.assertRaises(ValueError):
             AppServerRun(str(self.root), 'inspect', mode='bypass')
+
+    async def test_prolonged_approval_wait_and_terminal_actions(self):
+        script = r'''import json,os,sys
+def send(x): print(json.dumps(x),flush=True)
+for line in sys.stdin:
+ m=json.loads(line); method=m.get('method'); i=m.get('id')
+ if method=='initialize': send({'id':i,'result':{}})
+ elif method=='thread/start': send({'id':i,'result':{'thread':{'id':'wait-thread'}}})
+ elif method=='turn/start':
+  send({'id':i,'result':{'turn':{'id':'wait-turn'}}})
+  send({'id':'approval-wait','method':'item/commandExecution/requestApproval','params':{'threadId':'wait-thread','turnId':'wait-turn','itemId':'cmd-wait','command':'synthetic'}})
+ elif method=='turn/interrupt':
+  send({'id':i,'result':{}})
+  send({'method':'turn/completed','params':{'threadId':'wait-thread','turn':{'id':'wait-turn','status':'interrupted'}}})
+ elif method=='test/disconnect': os.close(1)
+ elif i=='approval-wait':
+  assert m['result']['decision']==EXPECTED_DECISION
+  send({'method':'turn/completed','params':{'threadId':'wait-thread','turn':{'id':'wait-turn','status':'completed'}}})
+'''
+        async def factory(*args, **kwargs):
+            expected = 'accept' if action == 'accept' else 'decline'
+            server = script.replace('EXPECTED_DECISION', repr(expected))
+            return await asyncio.create_subprocess_exec(sys.executable, "-u", "-c", server, **kwargs)
+
+        for action in ('accept', 'decline', 'cancel', 'exit', 'disconnect'):
+            with self.subTest(action=action), patch('app_server._EVENT_IDLE_TIMEOUT', .05), patch('app_server._PROCESS_POLL_INTERVAL', .01):
+                self.run = AppServerRun(str(self.root), 'wait', mode='development', codex='fake',
+                                        process_factory=factory)
+                pending = asyncio.Event()
+                async def consume():
+                    async for event in self.run.events():
+                        if event == 'approval/pending':
+                            pending.set()
+                task = asyncio.create_task(consume())
+                try:
+                    await asyncio.wait_for(pending.wait(), 2)
+                    approval_id = next(iter(self.run.pending_approvals))
+                    # Cross several idle deadlines without any server events.
+                    await asyncio.sleep(.18)
+                    self.assertFalse(task.done())
+                    self.assertEqual(self.run.state.status, 'running')
+                    self.assertIn(approval_id, self.run.pending_approvals)
+                    if action in ('accept', 'decline'):
+                        self.assertFalse(await self.run.decide_approval(approval_id, 'acceptForSession'))
+                        self.assertFalse(await self.run.decide_approval('unknown', 'accept'))
+                        self.assertTrue(await self.run.decide_approval(approval_id, action))
+                    elif action == 'cancel':
+                        await self.run.cancel()
+                    elif action == 'exit':
+                        self.run.process.terminate()
+                    else:
+                        self.run.process.stdin.write(b'{"method":"test/disconnect"}\n')
+                        await self.run.process.stdin.drain()
+                    await asyncio.wait_for(task, 2)
+                    expected = ('completed' if action in ('accept', 'decline') else
+                                'interrupted' if action == 'cancel' else 'failed')
+                    self.assertEqual(self.run.state.status, expected)
+                    self.assertFalse(self.run.pending_approvals)
+                    self.assertFalse(await self.run.decide_approval(approval_id, 'accept'))
+                    if action == 'disconnect':
+                        self.assertIsNone(self.run.process.returncode)
+                finally:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    await self.run.close()
+
+    async def test_idle_wait_checks_health_and_keeps_timeout_without_approval(self):
+        run = AppServerRun(str(self.root), 'synthetic')
+        run.process = Mock(returncode=None)
+        run.process.stdin.is_closing.return_value = False
+        run._reader = Mock()
+        run._reader.done.return_value = False
+        with patch('app_server._EVENT_IDLE_TIMEOUT', .03), patch('app_server._PROCESS_POLL_INTERVAL', .005):
+            with self.assertRaises(asyncio.TimeoutError):
+                await run._next_notification()
+            run.pending_approvals['synthetic'] = {}
+            waiting = asyncio.create_task(run._next_notification())
+            try:
+                await asyncio.sleep(.1)
+                self.assertFalse(waiting.done())
+                run.pending_approvals.clear()
+                await asyncio.sleep(.08)
+                self.assertTrue(waiting.done())
+                with self.assertRaises(asyncio.TimeoutError):
+                    await waiting
+            finally:
+                waiting.cancel()
+                await asyncio.gather(waiting, return_exceptions=True)
+            run.pending_approvals['synthetic'] = {}
+            for failure in ('process', 'reader', 'stdin'):
+                with self.subTest(failure=failure):
+                    run.process.returncode = 1 if failure == 'process' else None
+                    run._reader.done.return_value = failure == 'reader'
+                    run.process.stdin.is_closing.return_value = failure == 'stdin'
+                    with self.assertRaises(RuntimeError):
+                        await asyncio.wait_for(run._next_notification(), .2)
 
     async def test_cancel_with_pending_approval_declines_and_invalidates_it(self):
         script = r'''import json,sys
