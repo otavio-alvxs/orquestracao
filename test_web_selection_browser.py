@@ -17,14 +17,23 @@ window.fetch=async (url,options={})=>{
  if(url==='/api/maintenance') return new Response('{}');
  if(url==='/api/events') return new Response(new ReadableStream({start(c){controller=c}}));
  if(url==='/api/run'){ calls.push(JSON.parse(options.body)); return new Response('{}'); }
+ if(url==='/api/message'){ calls.push({message:JSON.parse(options.body)}); return new Response('{}'); }
  return new Response('{}');
 };
 function emit(s){ controller.enqueue(new TextEncoder().encode('event: state\\ndata: '+JSON.stringify(s)+'\\n\\n')); }
 async function test(){
  await new Promise(r=>setTimeout(r,100));
  const el=id=>document.getElementById(id), change=id=>el(id).dispatchEvent(new Event('change'));
+ const selectors=['project','mode','engine','profile','workflow'];
+ if(selectors.some(id=>!el(id).disabled)) throw Error('completed session selectors unlocked');
+ el('message').value='continue'; el('send-message').click(); await new Promise(r=>setTimeout(r,20));
+ if(JSON.stringify(calls.shift())!==JSON.stringify({message:{prompt:'continue'}})) throw Error('wrong continuation request');
+ emit(old); await new Promise(r=>setTimeout(r,20));
+ if(el('project').value!=='a' || selectors.some(id=>!el(id).disabled)) throw Error('original session changed');
  for(const [i,p] of ['a','b','c'].entries()){
-   el('new-task').click(); el('project').value=p; change('project'); el('mode').value='development'; change('mode'); el('workflow').value='direct'; change('workflow'); el('profile').value='complex'; el('prompt').value='task';
+   el('new-task').click();
+   if(['project','mode','profile','workflow'].some(id=>el(id).disabled)) throw Error('new task selectors locked');
+   el('project').value=p; change('project'); el('mode').value='development'; change('mode'); el('workflow').value='direct'; change('workflow'); el('profile').value='complex'; el('prompt').value='task';
    emit(old); await new Promise(r=>setTimeout(r,20));
    if(el('project').value!==p || el('profile').value!=='complex' || el('project').disabled) throw Error('draft overwritten '+p);
    el('start').click(); await new Promise(r=>setTimeout(r,20));

@@ -80,7 +80,7 @@
     $('result').textContent = state.result || '';
     if (state.mode === 'development') $('effective-mode').textContent = 'Desenvolvimento · workspaceWrite';
     else if (state.mode === 'reading') $('effective-mode').textContent = 'Leitura · readOnly';
-    lockSelection(active);
+    lockSelection(active || Boolean(state.thread_id));
     renderApprovals(state.approvals || []);
     $('publish-panel').classList.toggle('hidden', !state.publish_authorized && !state.publish_attempted && !state.publish_result);
     $('publish-status').textContent = state.publish_result || (state.publish_authorized ? 'Publicação de Draft PR autorizada ao concluir.' : '');
