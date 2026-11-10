@@ -114,6 +114,40 @@ a aplicação não consulta históricos privados para completar metadados. Uma
 retomada solicitada não apaga o último estado terminal sem um novo início
 observado com ordem verificável.
 
+### Delegação aplicada — Missão 036
+
+Na base `a127cbd`, duas investigações nativas, somente leitura, foram delegadas
+simultaneamente: `investigate_shutdown` e `investigate_events`. Uma consulta
+`list_agents` mostrou ambas em `running`. Foram mantidos no máximo dois filhos
+ativos por decisão operacional; não foi comprovado um limite imposto pelo runtime.
+O snapshot autenticado de `/api/session`, na mesma thread desta missão, mostrou
+ambas concluídas, com modelo/esforço resolvidos `gpt-6-luna`/`low`.
+O coordenador tinha `gpt-6.1-sol`/`medium` solicitado, mas seus campos observados
+permaneceram ausentes. Uma consulta sequencial de decisão, `sol_coordination`,
+foi observada pela Central como concluída com `gpt-6.1-sol`/`medium`.
+Esses campos são evidência do protocolo, sem comprovação independente do backend
+de inferência. A validação foi por HTTP e estado da Central, sem inspeção visual
+do navegador nem leitura de históricos privados.
+
+A melhoria escolhida foi a limpeza de RPC: uma falha ou cancelamento em
+`write/drain` podia abandonar o future registrado antes do bloco de limpeza;
+o reader, ao encerrar, podia atribuir a ele uma exceção nunca recuperada.
+O teste determinístico reproduziu o vazamento e o aviso antes da correção.
+Agora o envio também fica protegido pela limpeza, que cancela futures pendentes
+e recupera exceções já definidas, preservando o erro original do envio.
+`python3 -W default -m unittest -v test_app_server` passou com 27 testes, sem
+`Future exception was never retrieved`; a regressão cobre cinco situações de
+falha/cancelamento, incluindo EOF durante `drain`. O aviso da suíte anterior
+foi reproduzido, mas não atribuído exclusivamente a um teste de encerramento.
+
+O painel cria uma linha por evento recebido, até 500 linhas; o app-server
+encaminha nomes de métodos como `item/agentMessage/delta`. É viável agrupar
+visualmente sequências contíguas iguais, mantendo contagem bruta e linhas
+originais expansíveis, sem unir transições ou sequências intercaladas.
+Identificar grupos por item exigiria expor metadados hoje ausentes nessas linhas.
+Essa alteração visual não foi implementada: a correção de RPC era menor e tinha
+reprodução comprovada. A checkout LIVE e as configurações globais foram preservadas.
+
 ### Acesso remoto privado opcional — Tailscale Serve
 
 O acesso remoto fica desligado por padrão e exige uma origem e uma allowlist

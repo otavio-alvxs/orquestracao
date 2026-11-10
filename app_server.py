@@ -74,12 +74,17 @@ class AppServerRun:
         request_id = self._next_id
         future = asyncio.get_running_loop().create_future()
         self._responses[request_id] = future
-        self.process.stdin.write((json.dumps({"id": request_id, "method": method, "params": params or {}}) + "\n").encode())
-        await self.process.stdin.drain()
         try:
+            self.process.stdin.write((json.dumps({"id": request_id, "method": method, "params": params or {}}) + "\n").encode())
+            await self.process.stdin.drain()
             response = await asyncio.wait_for(future, timeout)
         finally:
             self._responses.pop(request_id, None)
+            if not future.done():
+                future.cancel()
+            elif not future.cancelled():
+                # The reader may reject the RPC while write/drain is failing.
+                future.exception()
         if "error" in response:
             raise RuntimeError("Codex app-server rejeitou uma solicitação.")
         return response.get("result", {})

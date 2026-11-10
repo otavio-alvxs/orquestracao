@@ -1,10 +1,11 @@
 import asyncio
+import gc
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from app_server import AppServerRun
 from orchestrated_run import create_orchestrated_run
@@ -470,6 +471,44 @@ for line in sys.stdin:
         self.run = AppServerRun(str(self.root), "fail", process_factory=factory)
         await asyncio.wait_for(collect(self.run), .5)
         self.assertEqual(self.run.state.status, "failed")
+
+    async def test_rpc_send_failure_cleans_future_even_if_reader_closes(self):
+        loop = asyncio.get_running_loop()
+        previous_handler = loop.get_exception_handler()
+        unhandled = []
+        loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+        try:
+            for failure in ("write", "drain", "eof_drain", "cancel", "eof_cancel"):
+                with self.subTest(failure=failure):
+                    self.run = AppServerRun(str(self.root), "send failure")
+                    process = Mock()
+                    process.stdout.readline = AsyncMock(return_value=b"")
+                    error = (asyncio.CancelledError() if "cancel" in failure
+                             else BrokenPipeError("transport closed"))
+
+                    async def drain():
+                        if failure.startswith("eof_"):
+                            # The reader can reject the RPC before drain unwinds.
+                            await self.run._read()
+                        raise error
+
+                    process.stdin.drain = drain
+                    if failure == "write":
+                        process.stdin.write.side_effect = error
+                    self.run.process = process
+                    try:
+                        with self.assertRaises(type(error)) as caught:
+                            await self.run._rpc("turn/interrupt")
+                        self.assertIs(caught.exception, error)
+                        leaked = bool(self.run._responses)
+                        self.run._responses.clear()
+                        gc.collect()
+                        self.assertFalse(unhandled, "RPC left an unretrieved exception")
+                        self.assertFalse(leaked, "RPC left a registered future")
+                    finally:
+                        self.run.process = None
+        finally:
+            loop.set_exception_handler(previous_handler)
 
     async def test_safe_server_request_responses_and_exec_fallback(self):
         self.assertEqual(AppServerRun._safe_request_response("item/fileChange/requestApproval"), {"decision": "decline"})
