@@ -142,6 +142,9 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
                                                "workflow": "orchestrated"}, None)
             self.assertEqual(self.app._response.call_args.args[1], 202)
             create.assert_called_once()
+            self.assertIn("preferencialmente em até 8 linhas", create.call_args.args[1])
+            self.assertIn("Exceda essa orientação", create.call_args.args[1])
+            self.assertEqual(create.call_args.args[2], "tarefa")
             self.assertEqual(self.app.session.workflow, "orchestrated")
             self.assertIsInstance(self.app.session.run, OrchestratedRun)
             if self.app.session.task:
@@ -182,7 +185,8 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
                                                "project": str(self.root), "mode": "development",
                                                "engine": "app-server", "workflow": "automatic"}, None)
             orchestrated.assert_called_once()
-            self.assertIn("no máximo 8 linhas", orchestrated.call_args.args[1])
+            self.assertIn("preferencialmente em até 8 linhas", orchestrated.call_args.args[1])
+            self.assertIn("Exceda essa orientação", orchestrated.call_args.args[1])
             self.assertEqual(self.app._snapshot()["effective_workflow"], "orchestrated")
             self.assertEqual(self.app._snapshot()["workflow"], "automatic")
             if self.app.session.task:

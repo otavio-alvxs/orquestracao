@@ -668,9 +668,10 @@ class OperationsServer:
                                                      (workflow, route.reason)))
             if engine == "app-server":
                 if effective_workflow == "orchestrated":
-                    planning_prompt = ("Produza um plano objetivo de implementação, riscos e verificações."
-                                       if workflow == "orchestrated" else
-                                       "Produza um plano de implementação com no máximo 8 linhas. Preserve arquivos/decisões necessários, riscos e verificações; registre incertezas relevantes. Evite resumo da tarefa e contexto que já esteja explícito.")
+                    planning_prompt = ("Produza um plano de implementação conciso, preferencialmente em até 8 linhas. "
+                                       "Preserve arquivos/decisões necessários, riscos e verificações; registre incertezas relevantes. "
+                                       "Exceda essa orientação se necessário para preservar informações importantes. "
+                                       "Evite resumo da tarefa e contexto que já esteja explícito.")
                     run = create_orchestrated_run(project, planning_prompt,
                                                   prompt, codex=self.codex, process_factory=self.process_factory)
                 else:
