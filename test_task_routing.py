@@ -6,6 +6,39 @@ from task_routing import select_route, automatic_workflow, escalate_route, LUNA,
 
 
 class RoutingTests(unittest.TestCase):
+    def test_local_contract_matrix(self):
+        positive = (
+            "Implemente a função normalizar em texto.py que retorna o texto em maiúsculas e sem espaços. Adicione testes para essa função.",
+            "Crie a função escolher em valores.py. Ela retorna o primeiro valor quando existe. Crie testes para a função.",
+            "Implement the function normalize in text.py that returns uppercase text and an empty string for empty input. Add tests for this function.",
+            "Create a function pick in values.py! It returns the first value when present. Write tests for the function.",
+        )
+        negative = (
+            "Implemente a função normalizar em texto.py. Adicione testes para essa função.",
+            "Implemente a função normalizar em texto.py que retorna algo. Adicione testes para essa função.",
+            "Implemente a função normalizar em texto.py que retorna texto e envie o relatório. Adicione testes para essa função.",
+            "Implement the function normalize in text.py that returns text and updates the server. Add tests for this function.",
+            "Implemente a função normalizar em texto.py que retorna texto e instale um pacote. Adicione testes para essa função.",
+            "Implemente a função normalizar em texto.py que retorna texto e reinicie um serviço. Adicione testes para essa função.",
+            "Implement the function normalize in text.py that returns text and install a package. Add tests for this function.",
+            "Implement the function normalize in text.py that returns text and restart a service. Add tests for this function.",
+            "Implement the function normalize in text.py that returns text. Add tests for this function. Create report.txt.",
+            "Implemente a função autenticar em auth.py que retorna o usuário. Adicione testes para essa função.",
+            "Implement the function migrate in database.py that returns a value. Add tests for this function.",
+            "Implemente a função publicar em texto.py que retorna texto. Adicione testes para essa função.",
+            "Implement the function normalize in text.py that returns text. Add tests for another function.",
+        )
+        for prompt in positive:
+            with self.subTest(prompt=prompt):
+                route = select_route(prompt)
+                self.assertEqual((route.profile, route.model, route.effort), ("intermediate", LUNA, "medium"))
+                self.assertEqual(automatic_workflow(route)[0], "direct")
+        for prompt in negative:
+            with self.subTest(prompt=prompt):
+                route = select_route(prompt)
+                self.assertEqual(route.profile, "complex")
+                self.assertEqual(automatic_workflow(route)[0], "orchestrated")
+
     def test_offline_adaptive_execution_evaluation(self):
         # Synthetic policy checks only; they do not measure tokens, quality, or cost.
         cases = (

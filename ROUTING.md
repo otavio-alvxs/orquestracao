@@ -1,5 +1,20 @@
 # Roteamento por tarefa — v0.16 / Missão 024
 
+## v0.21 — escopo local e contrato
+
+O perfil automático também reconhece uma função Python nomeada em arquivo
+identificado, com retorno descrito explicitamente e pedido de testes para a
+mesma função. O contrato pode estar em outra frase e conter conjunções; a
+regra aceita formas delimitadas em português e inglês, não interpreta texto
+arbitrário. Sinais de risco continuam prevalecendo, e pedidos vagos ou fora
+das formas reconhecidas permanecem conservadores. Casos elegíveis usam
+Luna/medium em execução direta, sem chamada de classificação adicional.
+Os perfis explícitos e o escalonamento não mudam.
+
+Na Missão 031, Direta e Automática passaram 5/5 testes no piloto informado;
+as métricas da Orquestrada por etapa não estavam consolidadas. Esse piloto
+não demonstra economia percentual nem superioridade estatística.
+
 ## v0.20 — fluxo opt-in Automática · Econômica
 
 Na Central, `workflow=automatic` usa `profile=auto` e o mesmo roteador

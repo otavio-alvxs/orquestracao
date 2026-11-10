@@ -29,6 +29,36 @@ def _bounded_python_unittest_task(text: str) -> bool:
     )
 
 
+def _local_function_contract(text: str) -> bool:
+    """Recognize a named local function, explicit return, and its tests.
+
+    This intentionally accepts a small grammar, not arbitrary compound tasks.
+    """
+    name = r"[a-z_]\w*"
+    file = r"[\w/-]+\.py"
+    intro = (r"(?:implemente|adicione|crie|implement|add|create)\s+"
+             r"(?:a|uma|the)\s+(?:função|function)\s+" + name +
+             r"(?:\([^)]{0,80}\))?\s+(?:em|no arquivo|in|in the file)\s+" + file)
+    contract = (r"(?:que|that|ela|it)\s+(?:retorna|returns|retorne|return)\s+"
+                r"[^.!?;]{1,160}")
+    tests = (r"(?:adicione|crie|escreva|add|create|write)\s+"
+             r"(?:os?\s+|um(?:a)?\s+|the\s+)?(?:testes?|tests?)\s+"
+             r"(?:para|da|dessa|desta|for|of)\s+"
+             r"(?:(?:a|essa|esta|the|this)\s+)?(?:função|function)\b")
+    match = re.fullmatch(intro + r"(?:\s+|[.!?]\s*)" + contract +
+                         r"[.!?;]\s*" + tests + r"[.!?]?", text)
+    if not match or len(text) > 700:
+        return False
+    # A second command hidden in the return description is not a contract.
+    return not re.search(
+        r"\b(?:e|and|then|depois|também|also)\s+"
+        r"(?:adicione|crie|altere|atualiz\w*|remov\w*|envi\w*|execute|"
+        r"escrev\w*|salv\w*|implement\w*|instal\w*|reinici\w*|"
+        r"add|create|change|update\w*|remove\w*|send\w*|run|"
+        r"writ\w*|sav\w*|install\w*|restart\w*)\b|"
+        r"\b(?:a seu critério|o que quiser|algo|resultado|something|anything|result)\b", text)
+
+
 @dataclass(frozen=True)
 class Route:
     profile: str
@@ -59,7 +89,7 @@ def select_route(prompt: str, profile: str = "auto") -> Route:
         )
         if not text or risk.search(text):
             profile = "complex"
-        elif _bounded_python_unittest_task(text):
+        elif _bounded_python_unittest_task(text) or _local_function_contract(text):
             profile = "intermediate"
         else:
             # Compound requests stay conservative. Allow only the recognized
