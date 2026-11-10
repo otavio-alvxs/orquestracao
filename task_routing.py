@@ -53,8 +53,9 @@ def _local_function_contract(text: str) -> bool:
     return not re.search(
         r"\b(?:e|and|then|depois|também|also)\s+"
         r"(?:adicione|crie|altere|atualiz\w*|remov\w*|envi\w*|execute|"
-        r"escrev\w*|salv\w*|implement\w*|add|create|change|update\w*|"
-        r"remove\w*|send\w*|run|writ\w*|sav\w*)\b|"
+        r"escrev\w*|salv\w*|implement\w*|instal\w*|reinici\w*|"
+        r"add|create|change|update\w*|remove\w*|send\w*|run|"
+        r"writ\w*|sav\w*|install\w*|restart\w*)\b|"
         r"\b(?:a seu critério|o que quiser|algo|resultado|something|anything|result)\b", text)
 
 
