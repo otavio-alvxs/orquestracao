@@ -51,6 +51,7 @@
     if (drafting) return;
     if (Object.hasOwn(state, 'rate_limits')) renderQuotas(state.rate_limits);
     const status = state.status || 'idle';
+    if (['starting', 'running'].includes(status)) { $('report-preview').classList.add('hidden'); $('report-text').value = ''; }
     active = Boolean(state.busy) || ['starting', 'running'].includes(status);
     start.disabled = active;
     $('new-task').disabled = active;
@@ -77,6 +78,7 @@
     if (status === 'completed') $('progress').style.width = '100%';
     $('cancel').classList.toggle('hidden', ['completed', 'failed', 'interrupted'].includes(status));
     $('new-task').classList.toggle('hidden', !['completed', 'failed', 'interrupted'].includes(status));
+    $('report-section').classList.toggle('hidden', !['completed','failed','interrupted'].includes(status) || !state.project);
     $('result-panel').classList.toggle('hidden', !state.result);
     $('result').textContent = state.result || '';
     if (state.mode === 'development') $('effective-mode').textContent = 'Desenvolvimento · workspaceWrite';
@@ -297,6 +299,37 @@
       } else render({ status: 'failed', error: error.message });
     }
   });
+  function reportText(state) {
+    const choice = (value, allowed) => allowed.includes(value) ? value : 'indisponível';
+    const projectName = typeof state.project_name === 'string' && /^[\p{L}\p{N}_. -]{1,80}$/u.test(state.project_name) && !/^(?:sk|ghp|github_pat|bearer)[-_]/i.test(state.project_name) ? state.project_name : 'indisponível';
+    const model = (value) => typeof value === 'string' && /^(?:gpt-[0-9]+(?:\.[0-9]+)?-(?:sol|luna|terra|astra)|Sol|Luna|Terra)$/.test(value) ? value : 'indisponível';
+    const effort = (value) => choice(value, ['low','medium','high','xhigh','max','ultra']);
+    const number = (v) => Number.isFinite(v) && v >= 0 ? String(v) : 'indisponível';
+    const clip = (v, limit) => typeof v === 'string' && v ? (v.length > limit ? v.slice(0, limit) + '\n[trecho omitido]' : v) : 'indisponível';
+    const flow = (v) => ({direct:'Direta', automatic:'Automática · Econômica', orchestrated:'Orquestrada'}[v] || 'indisponível');
+    const status = (v) => ({completed:'Concluída', failed:'Falhou', interrupted:'Cancelada', running:'Em atividade', planned:'Planejada', blocked:'Bloqueada', cancelled:'Cancelada', shutdown:'Encerrada', unknown:'Desconhecida'}[v] || 'indisponível');
+    const stages = Object.entries(state.agents || {}).slice(0, 20).map(([id, agent]) => {
+      if (id === 'coordinator' || agent.role === 'Coordenador') return null;
+      const knownRoles = ['developer','reviewer','default','worker','explorer'];
+      const observedRole = knownRoles.includes(agent.role) ? `papel ${agent.role}` : knownRoles.includes(agent.name) ? `nome ${agent.name}; papel indisponível` : 'papel indisponível';
+      const name = id === 'planning' && agent.role === 'Etapa' ? 'Planejamento' : id === 'implementation' && agent.role === 'Etapa' ? 'Implementação' : `Agente · ${observedRole}`;
+      const metrics = agent.role === 'Etapa' ? `; entrada ${number(agent.input_tokens)}, cache ${number(agent.cached_input_tokens)}, saída ${number(agent.output_tokens)} tokens (informados pela etapa)` : '';
+      return `- ${name}: ${status(agent.status)}${metrics}`;
+    }).filter(Boolean).join('\n') || 'Não informado.';
+    const total = state.effective_workflow === 'orchestrated' ? 'Total da orquestração indisponível.' : `Entrada ${number(state.input_tokens)}, cache ${number(state.cached_input_tokens)}, saída ${number(state.output_tokens)} tokens (snapshot do executor).`;
+    const report = `# Relatório da execução\n\n## Identificação\nGerado em: ${new Date().toLocaleString('pt-BR')}\nProjeto: ${projectName}\nEstado: ${status(state.status)}\n\n## Execução\nFluxo solicitado: ${flow(state.requested_workflow || state.workflow)}\nFluxo efetivo: ${flow(state.effective_workflow)}\nModo: ${choice(state.mode, ['reading','development'])}\nModelo/esforço solicitado: ${model(state.requested_model)} / ${effort(state.requested_effort)}\nModelo/esforço observado: ${model(state.observed_model)} / ${effort(state.observed_effort)}\nDuração: ${number(state.duration_seconds)} s\n${total}\n\n## Objetivo\nNão incluído.\n\n## Resultado gerado pelo executor\n${clip(state.result, 12000)}\n\n## Mudanças e verificações\nArquivos observados: não disponibilizados para exportação verificada. Testes e comandos: não estruturados.\n\n## Bloqueios e próximas ações\n${clip(state.error, 2000)}\nPróximas ações: não estruturadas.\n\n## Etapas e agentes\n${stages}`;
+    return clip(report, 18000);
+  }
+  $('report-preview-button').addEventListener('click', () => {
+    if (!latestState || !['completed','failed','interrupted'].includes(latestState.status)) return;
+    $('report-text').value = reportText(latestState);
+    $('report-feedback').textContent = '';
+    $('report-preview').classList.remove('hidden');
+  });
+  $('report-copy').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText($('report-text').value); $('report-feedback').textContent = 'Relatório copiado.'; }
+    catch (_) { $('report-feedback').textContent = 'Não foi possível copiar. Selecione o texto para copiá-lo manualmente.'; }
+  });
   $('cancel').addEventListener('click', async () => {
     $('cancel').disabled = true;
     try { await api('/api/cancel', {}); } finally { $('cancel').disabled = false; }
@@ -324,7 +357,7 @@
     finally { $('escalate').disabled = false; }
   });
   function newTask() {
-    drafting = true; handoffDraft = null;
+    drafting = true; handoffDraft = null; $('report-preview').classList.add('hidden'); $('report-text').value = '';
     $('handoff-preview').classList.add('hidden'); $('handoff-confirm').checked = false;
     $('publish-draft-pr').checked = false;
     start.textContent = 'Iniciar nova tarefa'; start.disabled = false;

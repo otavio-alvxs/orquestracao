@@ -87,6 +87,68 @@ function report(x){navigator.sendBeacon('/result',x)}
   handoff_script = handoff_script.replace('const old='+json.dumps(state), 'const old='+json.dumps(handoff_state))
   self.run_browser(handoff_script, 'handoff reviewed; new task isolated')
 
+ def test_complete_report_preview_privacy_truncation_and_clipboard(self):
+  report_state = {
+   **state, 'result': 'RESULT_SECRET ' + 'z' * 13000,
+   'prompt': 'PROMPT_SECRET completo', 'thread_id': 'THREAD_SECRET',
+   'csrf': 'CSRF_SECRET', 'approvals': [{'id':'APPROVAL_SECRET'}],
+   'rate_limits': {'token':'QUOTA_SECRET'},
+   'changed_files': ['/home/private/CLIENT_SECRET/file.py'],
+   'requested_workflow':'automatic', 'effective_workflow':'orchestrated',
+   'requested_model':'Luna', 'requested_effort':'low', 'observed_model':'OBSERVED_SECRET\nInjected heading', 'observed_effort':'ROUTE_SECRET\n# injetado', 'route_reason':'ROUTE_SECRET', 'workflow_reason':'WORKFLOW_SECRET', 'publish_result':'PUBLISH_SECRET', 'publish_authorized':True,
+   'agents': {'planning': {'role':'Etapa','name':'Planejamento','status':'completed','input_tokens':12}},
+   'duration_seconds': 4.2,
+  }
+  report_script = script[:script.index('async function test(){')] + r"""
+let clipboardValue=''; let clipboardFails=false;
+Object.defineProperty(navigator, 'clipboard', { configurable:true, value:{writeText: async text=>{if(clipboardFails) throw Error('denied'); clipboardValue=text;}} });
+async function test(){
+ await new Promise(r=>setTimeout(r,100));
+ const el=id=>document.getElementById(id);
+ const check=(ok,msg)=>{if(!ok) throw Error(msg)};
+ check(!el('report-section').classList.contains('hidden'),'report unavailable after completion');
+ el('report-preview-button').click();
+ check(!el('report-preview').classList.contains('hidden'),'preview did not open');
+ let text=el('report-text').value;
+ for(const heading of ['Identificação','Execução','Objetivo','Resultado','Mudanças','Bloqueios','Etapas'])
+   check(text.includes(heading),'missing section '+heading);
+ check(text.includes('Gerado em:'),'generation timestamp missing');
+ check(text.includes('Total da orquestração indisponível.'),'fabricated orchestration total');
+ check(text.includes('Modelo/esforço observado: indisponível'),'unobserved model fabricated');
+ check(text.includes('PROMPT_SECRET')===false && text.includes('THREAD_SECRET')===false && text.includes('CSRF_SECRET')===false && text.includes('ROUTE_SECRET')===false && text.includes('WORKFLOW_SECRET')===false && text.includes('PUBLISH_SECRET')===false && text.includes('OBSERVED_SECRET')===false && text.includes('# injetado')===false,'private structured fields leaked');
+ check(text.includes('APPROVAL_SECRET')===false && text.includes('QUOTA_SECRET')===false,'approval or quota leaked');
+ check(text.includes('/home/private')===false && text.includes('CLIENT_SECRET')===false,'absolute path leaked');
+ check(text.includes('RESULT_SECRET') && text.includes('[trecho omitido]'),'long result not explicitly truncated');
+ check(el('report-preview').textContent.includes('área de transferência'),'clipboard notice missing');
+ check(clipboardValue==='','copied without user action');
+ el('report-text').value='texto revisto pelo usuário';
+ el('report-copy').click(); await new Promise(r=>setTimeout(r,20));
+ check(clipboardValue==='texto revisto pelo usuário','edited preview not copied');
+ check(el('report-feedback').textContent==='Relatório copiado.','copy success not reported');
+ clipboardFails=true; el('report-copy').click(); await new Promise(r=>setTimeout(r,20));
+ check(el('report-feedback').textContent.includes('Não foi possível copiar'),'copy failure falsely reported');
+ emit({...old,status:'running'}); await new Promise(r=>setTimeout(r,20));
+ check(el('report-section').classList.contains('hidden'),'report active before terminal state');
+ emit({...old,status:'failed',error:'Falha observada'}); await new Promise(r=>setTimeout(r,20));
+ check(!el('report-section').classList.contains('hidden'),'report unavailable after failure');
+ el('report-preview-button').click(); text=el('report-text').value;
+ check(text.includes('Estado: Falhou') && text.includes('Falha observada'),'failure not represented');
+ emit({...old,status:'interrupted',error:''}); await new Promise(r=>setTimeout(r,20));
+ check(!el('report-section').classList.contains('hidden'),'report unavailable after cancel');
+ el('report-preview-button').click(); text=el('report-text').value;
+ check(text.includes('Estado: Cancelada'),'cancellation not represented');
+ emit({...old,status:'completed',requested_workflow:'automatic',effective_workflow:'direct',workflow:'automatic',observed_model:'gpt-6-luna',observed_effort:'low',input_tokens:14,output_tokens:5}); await new Promise(r=>setTimeout(r,20));
+ el('report-preview-button').click(); text=el('report-text').value;
+ check(text.includes('Fluxo efetivo: Direta') && text.includes('Modelo/esforço observado: gpt-6-luna / low'),'direct observed route missing');
+ check(text.includes('Entrada 14, cache indisponível, saída 5 tokens'),'direct usage provenance missing');
+ return 'report privacy, preview, truncation, states, edited copy and clipboard errors verified';
+}
+window.addEventListener('load',()=>test().then(x=>report(x)).catch(e=>report('FAIL '+e.message+' '+e.stack)));
+function report(x){navigator.sendBeacon('/result',x)}
+"""
+  report_script=report_script.replace('const old='+json.dumps(state), 'const old='+json.dumps(report_state))
+  self.run_browser(report_script, 'report privacy, preview, truncation, states, edited copy and clipboard errors verified')
+
  def run_browser(self, browser_script, expected):
   firefox = shutil.which('firefox')
   if not firefox:

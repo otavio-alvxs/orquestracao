@@ -73,7 +73,7 @@
       <div id="escalation" class="composer hidden"><textarea id="escalation-reason" maxlength="1000" placeholder="Motivo para elevar o modelo neste próximo turno"></textarea><button id="escalate" class="primary">Escalonar próximo turno</button></div>
       <p id="route-info" class="hint"></p>
       <div id="result-panel" class="result-panel hidden"><div class="result-title"><span>RESULTADO</span><span id="tokens"></span></div><pre id="result"></pre></div>
-      <div id="error" class="error hidden"></div>
+      <section id="report-section" class="hidden"><button id="report-preview-button" class="new-task">Copiar relatório completo</button><div id="report-preview" class="hidden"><p class="hint">Revise e remova dados sensíveis antes de copiar. O conteúdo será enviado à área de transferência deste dispositivo; revise antes de compartilhar.</p><textarea id="report-text" rows="16" aria-label="Prévia editável do relatório"></textarea><button id="report-copy" class="primary">Copiar texto revisado</button><p id="report-feedback" aria-live="polite"></p></div></section><div id="error" class="error hidden"></div>
       <div class="run-actions"><button id="cancel" class="cancel">Cancelar execução</button><button id="continue-work" class="new-task hidden">Continuar trabalho com resumo ↗</button><button id="new-task" class="new-task hidden">Nova tarefa <span>↗</span></button></div>
       <details class="events"><summary><span>Eventos técnicos</span><span id="event-count">0 eventos</span></summary><ol id="event-list"></ol></details>
     </section>
