@@ -78,6 +78,26 @@ não substituem controles técnicos. Use projetos e
 tarefas autorizados e uma configuração Codex confiável. O token CSRF e o estado
 da única tarefa ficam na memória do processo, que escuta somente `127.0.0.1`.
 
+### Continuidade de trabalho — issue #31
+
+**Iniciar nova tarefa** cria uma execução isolada. Para responder a um plano ou
+pedido de confirmação em Direta, use **Continuar trabalho · mesma thread**,
+enquanto a sessão app-server estiver disponível.
+
+Após conclusão, falha ou cancelamento, **Continuar trabalho com resumo** permite
+abrir outra execução no mesmo projeto, inclusive entre Direta e Orquestrada.
+O resumo é montado sem inferência adicional, com trechos limitados do pedido,
+resultado, arquivos observados e estados disponíveis. Revise e complemente
+pendências, decisões, evidências e condições antes de confirmar; trechos omitidos
+são sinalizados. O resumo não é histórico integral nem comprovação independente.
+
+A prévia é editável, inicia em Leitura e exige confirmação. Desenvolvimento é uma
+nova escolha explícita; aprovações de escrita, publicação, pagamento e outras
+ações sensíveis não são herdadas. A nova execução recebe essa distinção e deve
+reconfirmar as ações conforme as regras locais. Draft PR não é autorizado por
+esse fluxo. Contexto expirado ou de outro projeto é recusado. Não há persistência:
+reiniciar o backend perde a sessão e a possibilidade de recuperar seu resumo.
+
 ### Roteamento de modelo e esforço
 
 A central seleciona modelo/esforço por tarefa com regras locais, sem chamada de
