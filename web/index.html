@@ -40,13 +40,21 @@
         <div class="field task-field"><label for="workflow">FLUXO</label><div class="select-wrap"><select id="workflow"><option value="direct">Direta</option><option value="orchestrated">Orquestrada · Sol planeja, Luna implementa</option><option value="automatic">Automática · Econômica</option></select></div></div>
       </div>
       <label id="publish-option" class="publish-option hidden"><input id="publish-draft-pr" type="checkbox"> Autorizar criação de um Draft PR após esta tarefa, uma única vez. O Codex precisa criar um commit novo em feat/* e deixar a árvore de trabalho limpa.</label>
+      <section id="handoff-preview" class="field task-field hidden" aria-label="Contexto da continuação">
+        <label for="handoff-summary">CONTINUAR TRABALHO · NOVA EXECUÇÃO COM RESUMO</label>
+        <p class="hint">Revise o contexto abaixo. Uma nova thread será criada no mesmo projeto; histórico completo e permissões anteriores não serão transferidos. Escolha o modo e o fluxo desta execução.</p>
+        <textarea id="handoff-summary" maxlength="8000" rows="12" aria-label="Resumo revisável da continuação"></textarea>
+        <label><input id="handoff-confirm" type="checkbox"> Revisei o resumo. Aprovações anteriores são históricas; ações sensíveis precisam de nova confirmação conforme as regras do projeto.</label>
+        <button id="discard-handoff" class="new-task">Descartar continuação e iniciar tarefa isolada</button>
+      </section>
       <div class="field task-field">
         <div class="label-line"><label for="prompt">SUA TAREFA</label><span id="char-count">0 / 16.000</span></div>
         <textarea id="prompt" maxlength="16000" placeholder="Ex.: Analise a estrutura do projeto e resuma seus principais componentes…" spellcheck="true"></textarea>
-        <div class="form-footer"><span id="mode-hint" class="hint">A execução não altera arquivos.</span><button id="start" class="primary"><span class="play">▶</span> Iniciar tarefa <kbd>⌘ ↵</kbd></button></div>
+        <div class="form-footer"><span id="mode-hint" class="hint">A execução não altera arquivos.</span><button id="start" class="primary"><span class="play">▶</span> Iniciar nova tarefa <kbd>⌘ ↵</kbd></button></div>
       </div>
       <div class="field task-field"><label for="engine">EXECUTOR</label><div class="select-wrap"><select id="engine"><option value="app-server">Codex app-server · sessão contínua</option><option value="exec">codex exec · execução isolada</option></select></div></div>
       <div class="field task-field"><label for="profile">ESTRATÉGIA</label><div class="select-wrap"><select id="profile"><option value="auto">Automática</option><option value="simple">Simples · Luna/low</option><option value="intermediate">Intermediária · Luna/medium</option><option value="complex">Complexa · Sol/medium</option></select></div></div>
+      <p class="hint">Iniciar nova tarefa cria uma execução isolada, sem contexto anterior. Para responder à execução atual, use Continuar trabalho.</p>
       <p class="hint">A rota automática usa Luna/low para pedidos curtos reconhecíveis, Luna/medium para escopo moderado e Sol/medium para tarefas amplas ou risco técnico elevado. Revise a escolha quando necessário.</p>
     </section>
 
@@ -60,12 +68,13 @@
       <section id="publish-panel" class="publish-panel hidden" aria-live="polite"><p id="publish-status"></p></section>
       <div id="changed-files" class="changed-files hidden"></div>
       <ol id="conversation" class="conversation" aria-label="Conversa atual"></ol>
-      <div id="composer" class="composer hidden"><textarea id="message" maxlength="16000" placeholder="Enviar uma mensagem nesta sessão…"></textarea><button id="send-message" class="primary">Enviar</button></div>
+      <p id="continuation-help" class="hint hidden">Continuar trabalho abaixo mantém a mesma thread e o contexto desta sessão.</p>
+      <div id="composer" class="composer hidden"><textarea id="message" maxlength="16000" placeholder="Enviar uma mensagem nesta sessão…"></textarea><button id="send-message" class="primary">Continuar trabalho · mesma thread</button></div>
       <div id="escalation" class="composer hidden"><textarea id="escalation-reason" maxlength="1000" placeholder="Motivo para elevar o modelo neste próximo turno"></textarea><button id="escalate" class="primary">Escalonar próximo turno</button></div>
       <p id="route-info" class="hint"></p>
       <div id="result-panel" class="result-panel hidden"><div class="result-title"><span>RESULTADO</span><span id="tokens"></span></div><pre id="result"></pre></div>
       <div id="error" class="error hidden"></div>
-      <div class="run-actions"><button id="cancel" class="cancel">Cancelar execução</button><button id="new-task" class="new-task hidden">Nova tarefa <span>↗</span></button></div>
+      <div class="run-actions"><button id="cancel" class="cancel">Cancelar execução</button><button id="continue-work" class="new-task hidden">Continuar trabalho com resumo ↗</button><button id="new-task" class="new-task hidden">Nova tarefa <span>↗</span></button></div>
       <details class="events"><summary><span>Eventos técnicos</span><span id="event-count">0 eventos</span></summary><ol id="event-list"></ol></details>
     </section>
     <details class="events"><summary>Manutenção LIVE</summary>

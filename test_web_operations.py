@@ -75,6 +75,126 @@ class WebOperationsTests(unittest.IsolatedAsyncioTestCase):
         self.monitor_patch.stop()
         self.temp.cleanup()
 
+    def prepare_handoff(self, workflow="orchestrated", status="completed"):
+        self.app = OperationsServer([self.root])
+        if workflow == "orchestrated":
+            run = OrchestratedRun(str(self.root), "objetivo original", "plano")
+        else:
+            run = AppServerRun(str(self.root), "objetivo original", mode="development")
+        run.state.status = status
+        run.state.final = "Plano: alterar arquivo.py; aguardar confirmação. Evidência: arquivo.py:10."
+        run.changed_files = {"arquivo.py"}
+        self.app.session.run = run
+        self.app.session.engine = "app-server"
+        self.app.session.workflow = "automatic" if workflow == "orchestrated" else "direct"
+        self.app.session.effective_workflow = workflow
+        self.app._response = AsyncMock()
+        return run, self.app._snapshot()["handoff"]
+
+    async def test_handoff_transitions_keep_reviewed_context_and_reset_authorizations(self):
+        for source, target in (("direct", "orchestrated"), ("orchestrated", "direct"),
+                               ("orchestrated", "automatic")):
+            with self.subTest(source=source, target=target):
+                old, preview = self.prepare_handoff(source)
+                self.app.session.publish_authorized = True
+                with patch.object(self.app, "_execute", new=AsyncMock()):
+                    await self.app._start_run({"prompt": "continuar o trabalho", "project": str(self.root),
+                        "mode": "development", "engine": "app-server", "workflow": target,
+                        "handoff": {**preview, "summary": preview["summary"] + "\nRevisado pelo usuário.",
+                                    "confirmed": True}}, None)
+                    self.assertEqual(self.app._response.call_args.args[1], 202)
+                    await self.app.session.task
+                new = self.app.session.run
+                self.assertIsNot(new, old)
+                self.assertIn("objetivo original", new.prompt)
+                self.assertIn("arquivo.py:10", new.prompt)
+                self.assertIn("Revisado pelo usuário.", new.prompt)
+                self.assertIn("não autorização", new.prompt)
+                self.assertIn("reconfirme ações", new.prompt)
+                self.assertFalse(self.app.session.publish_authorized)
+                self.assertNotEqual(self.app.session.context_id, preview["source"])
+                self.assertEqual(self.app._snapshot()["prompt"], "continuar o trabalho")
+                await self.app.close()
+
+    async def test_handoff_rejects_missing_stale_unconfirmed_cross_project_and_publish(self):
+        old, preview = self.prepare_handoff()
+        base = {"prompt": "continuar", "project": str(self.root), "mode": "development",
+                "engine": "app-server", "handoff": {**preview, "confirmed": True}}
+        cases = [({"handoff": None}, 409),
+                 ({"handoff": {**preview, "source": "expired", "confirmed": True}}, 409),
+                 ({"handoff": preview}, 400),
+                 ({"handoff": {**preview, "summary": "x" * 8001, "confirmed": True}}, 400),
+                 ({"publish_draft_pr": True}, 400)]
+        with tempfile.TemporaryDirectory() as other:
+            self.app.projects += (Path(other),)
+            cases.append(({"project": other}, 409))
+            for overrides, status in cases:
+                with self.subTest(overrides=overrides):
+                    # Let the publish check reach the handoff-specific refusal.
+                    with patch("web_operations.PUBLISH_PROJECT", self.root):
+                        await self.app._start_run({**base, **overrides}, None)
+                    self.assertEqual(self.app._response.call_args.args[1], status)
+                    self.assertIs(self.app.session.run, old)
+                    self.assertIsNone(self.app.session.task)
+
+    async def test_handoff_unavailable_without_context_while_busy_or_pending_approval(self):
+        self.app = OperationsServer([self.root])
+        self.assertIsNone(self.app._handoff())
+        for status in ("starting", "running"):
+            run, preview = self.prepare_handoff(status=status)
+            self.assertIsNone(preview)
+        run, preview = self.prepare_handoff(status="interrupted")
+        self.assertIn("interrupted", preview["summary"])
+        run.pending_approvals["pending"] = {"id": "pending"}
+        self.assertIsNone(self.app._handoff())
+        run.pending_approvals.clear()
+        self.app.maintenance_pending = True
+        self.assertIsNone(self.app._handoff())
+
+    async def test_terminal_handoff_is_bounded_and_does_not_reuse_closed_thread(self):
+        for status in ("failed", "interrupted"):
+            run, preview = self.prepare_handoff("direct", status)
+            run.state.final = "x" * 20000
+            preview = self.app._snapshot()["handoff"]
+            self.assertLessEqual(len(preview["summary"]), 8000)
+            self.assertIn("[trecho omitido]", preview["summary"])
+            run.thread_id = "closed-thread"
+            await run.close()
+            self.assertFalse(self.app._snapshot()["same_thread_available"])
+            await self.app._continue_run({"prompt": "continuar"}, None)
+            self.assertEqual(self.app._response.call_args.args[1], 409)
+            with patch.object(self.app, "_execute", new=AsyncMock()):
+                await self.app._start_run({"prompt": "reavaliar pendências", "project": str(self.root),
+                    "mode": "reading", "engine": "app-server",
+                    "handoff": {**preview, "confirmed": True}}, None)
+                self.assertEqual(self.app._response.call_args.args[1], 202)
+                await self.app.session.task
+            await self.app.close()
+
+    async def test_new_task_does_not_inherit_context(self):
+        old, preview = self.prepare_handoff()
+        await self.app.session.emit("message", {"text": "old private message"})
+        with patch.object(self.app, "_execute", new=AsyncMock()):
+            await self.app._start_run({"prompt": "tarefa independente", "project": str(self.root),
+                "mode": "reading", "engine": "app-server"}, None)
+            await self.app.session.task
+        self.assertEqual(self.app.session.run.prompt, "tarefa independente")
+        self.assertNotIn("old private message", str(self.app.session.events))
+        self.assertNotIn("objetivo original", self.app.session.run.prompt)
+
+    async def test_same_thread_continuation_invalidates_previous_handoff(self):
+        run, preview = self.prepare_handoff("direct")
+        run.thread_id = "same-thread"
+        self.app.session.publish_authorized = True
+        with patch.object(self.app, "_execute", new=AsyncMock()):
+            await self.app._continue_run({"prompt": "confirmação nesta thread"}, None)
+            await self.app.session.task
+        self.assertEqual(self.app._response.call_args.args[1], 202)
+        self.assertIs(self.app.session.run, run)
+        self.assertEqual(run.thread_id, "same-thread")
+        self.assertNotEqual(self.app.session.context_id, preview["source"])
+        self.assertFalse(self.app.session.publish_authorized)
+
     async def test_reload_session_snapshot_and_cursor(self):
         self.app = OperationsServer([self.root])
         run = AppServerRun(str(self.root), "recuperar", mode="development")
@@ -950,7 +1070,7 @@ for line in sys.stdin:
         }))[0], 400)
 
     async def test_turn_route_escalation_is_explicit_and_keeps_session(self):
-        script = r'''import json,sys
+        script = r'''import json,sys,time
 def send(value): print(json.dumps(value), flush=True)
 turns=0
 for line in sys.stdin:
@@ -975,6 +1095,7 @@ for line in sys.stdin:
         await asyncio.wait_for(self.app.session.task, 3)
         run = self.app.session.run
         self.assertEqual((run.state.requested_model, run.state.requested_effort), ("gpt-6-luna", "low"))
+        self.assertEqual(run.state.status, "completed")
         self.assertEqual((await self.post("/api/message", {
             "prompt": "mensagem", "escalate": True, "escalation_reason": "   ",
         }))[0], 400)

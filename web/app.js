@@ -5,11 +5,11 @@
   const project = $('project'), prompt = $('prompt'), start = $('start'), mode = $('mode'), profile = $('profile'), workflow = $('workflow');
   const statusText = { idle: 'Aguardando', starting: 'Preparando execução', running: 'Em andamento', completed: 'Concluída', failed: 'Falhou', interrupted: 'Cancelada' };
   let lastId = 0, active = true, streamPromise = null;
-  let quotaSnapshot = null, drafting = false;
+  let quotaSnapshot = null, drafting = false, latestState = null, handoffDraft = null;
   const quotaFreshnessSeconds = 180;
   setInterval(() => { if (quotaSnapshot) renderQuotas(quotaSnapshot); }, 30000);
   projects.forEach((item) => { const option = document.createElement('option'); option.value = item.id; option.textContent = item.name; project.append(option); });
-  function publicationAllowed() { return projects.find(p => p.id === project.value)?.publish; }
+  function publicationAllowed() { return !handoffDraft && projects.find(p => p.id === project.value)?.publish; }
   project.addEventListener('change', () => mode.dispatchEvent(new Event('change')));
   prompt.addEventListener('input', () => $('char-count').textContent = `${prompt.value.length.toLocaleString('pt-BR')} / 16.000`);
   mode.addEventListener('change', () => {
@@ -47,6 +47,7 @@
     return fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrf }, body: JSON.stringify(body) });
   }
   function render(state) {
+    latestState = state.project ? state : latestState;
     if (drafting) return;
     if (Object.hasOwn(state, 'rate_limits')) renderQuotas(state.rate_limits);
     const status = state.status || 'idle';
@@ -91,8 +92,13 @@
     $('error').textContent = state.error || '';
     if (state.thread_id) { $('session-id').textContent = `Sessão ${state.thread_id}`; $('session-id').classList.remove('hidden'); }
     const effectiveWorkflow = state.effective_workflow || state.workflow || 'direct';
-    $('composer').classList.toggle('hidden', $('engine').value !== 'app-server' || effectiveWorkflow === 'orchestrated' || !['completed','failed','interrupted'].includes(status));
-    $('escalation').classList.toggle('hidden', $('engine').value !== 'app-server' || effectiveWorkflow === 'orchestrated' || !['completed','failed'].includes(status));
+    const sameThread = state.same_thread_available ?? Boolean(state.thread_id);
+    $('continuation-help').classList.toggle('hidden', !sameThread || effectiveWorkflow === 'orchestrated' || active);
+    $('continue-work').classList.toggle('hidden', !state.handoff || active);
+    $('continue-work').disabled = active;
+    $('continue-work').textContent = effectiveWorkflow === 'orchestrated' ? 'Continuar trabalho com resumo ↗' : 'Continuar em outro fluxo com resumo ↗';
+    $('composer').classList.toggle('hidden', !sameThread || $('engine').value !== 'app-server' || effectiveWorkflow === 'orchestrated' || !['completed','failed','interrupted'].includes(status));
+    $('escalation').classList.toggle('hidden', !sameThread || $('engine').value !== 'app-server' || effectiveWorkflow === 'orchestrated' || !['completed','failed'].includes(status));
     const flowName = (name) => ({ direct: 'Direta', orchestrated: 'Orquestrada', automatic: 'Automática · Econômica' }[name] || name);
     const flow = `Fluxo: ${flowName(state.requested_workflow || state.workflow || 'direct')} → ${flowName(effectiveWorkflow)}${state.workflow_reason ? ` · ${state.workflow_reason}` : ''}`;
     $('route-info').textContent = `${flow}${state.requested_model ? ` · Modelo/esforço solicitado: ${state.requested_model}/${state.requested_effort}${state.observed_model ? ` · rerota observada: ${state.observed_model}${state.observed_route_reason ? ` (${state.observed_route_reason})` : ''}` : ''}${state.workflow_reason ? '' : ` · ${state.route_reason || ''}`}${state.escalations?.length ? ` · Escalonamentos: ${state.escalations.length}` : ''}` : ''}`;
@@ -101,7 +107,7 @@
     $('tokens').textContent = effectiveWorkflow === 'orchestrated' ? 'Total da orquestração indisponível · métricas por etapa no painel' : state.input_tokens == null && state.output_tokens == null ? 'Tokens indisponíveis' : `Entrada ${metric(state.input_tokens)} · cache ${metric(state.cached_input_tokens)} · saída ${metric(state.output_tokens)}`;
     if (state.duration_seconds != null) $('elapsed').textContent = `${state.duration_seconds.toFixed(1)} s`;
     if (['completed', 'failed', 'interrupted'].includes(status)) {
-      start.disabled = active; start.innerHTML = '<span class="play">▶</span> Iniciar tarefa <kbd>⌘ ↵</kbd>';
+      start.disabled = active; start.innerHTML = '<span class="play">▶</span> Iniciar nova tarefa <kbd>⌘ ↵</kbd>';
     }
   }
   function renderApprovals(approvals) {
@@ -260,6 +266,11 @@
   }
   start.addEventListener('click', async () => {
     const task = prompt.value; if (!task.trim() || active) return;
+    if (handoffDraft && (!$('handoff-confirm').checked || !$('handoff-summary').value.trim())) {
+      $('handoff-confirm').reportValidity();
+      $('handoff-summary').focus();
+      return;
+    }
     $('approval-feedback').textContent = ''; $('approval-feedback').classList.add('hidden');
     drafting = false;
     active = true; $('event-list').replaceChildren(); $('event-count').textContent = '0 eventos';
@@ -270,13 +281,21 @@
     start.disabled = true; start.textContent = 'Iniciando…';
     render({ status: 'starting', mode: mode.value });
     try {
-      const publishDraftPr = $('publish-draft-pr').checked;
+      const handoff = handoffDraft ? { source: handoffDraft.source, summary: $('handoff-summary').value, confirmed: $('handoff-confirm').checked } : null;
+      const publishDraftPr = !handoff && $('publish-draft-pr').checked;
       $('publish-draft-pr').checked = false;
-      const response = await api('/api/run', { prompt: task, project: project.value, engine: $('engine').value, mode: mode.value, workflow: workflow.value, profile: profile.value, publish_draft_pr: publishDraftPr });
+      const response = await api('/api/run', { prompt: task, project: project.value, engine: $('engine').value, mode: mode.value, workflow: workflow.value, profile: profile.value, publish_draft_pr: publishDraftPr, ...(handoff ? { handoff } : {}) });
       if (!response.ok) { const detail = await response.text(); throw new Error(detail || 'Não foi possível iniciar.'); }
+      handoffDraft = null; $('handoff-preview').classList.add('hidden');
       lockSelection(true);
       stream();
-    } catch (error) { active = false; render({ status: 'failed', error: error.message }); }
+    } catch (error) {
+      active = false;
+      if (handoffDraft) {
+        drafting = true; start.disabled = false; start.textContent = 'Continuar com resumo';
+        $('error').classList.remove('hidden'); $('error').textContent = error.message;
+      } else render({ status: 'failed', error: error.message });
+    }
   });
   $('cancel').addEventListener('click', async () => {
     $('cancel').disabled = true;
@@ -304,10 +323,29 @@
     } catch (error) { active = false; addEvent(error.message); }
     finally { $('escalate').disabled = false; }
   });
-  $('new-task').addEventListener('click', () => {
-    drafting = true;
+  function newTask() {
+    drafting = true; handoffDraft = null;
+    $('handoff-preview').classList.add('hidden'); $('handoff-confirm').checked = false;
+    $('publish-draft-pr').checked = false;
+    start.textContent = 'Iniciar nova tarefa'; start.disabled = false;
     prompt.value = ''; prompt.dispatchEvent(new Event('input')); prompt.focus(); $('execution').classList.add('hidden');
     $('approval-feedback').textContent = ''; $('approval-feedback').classList.add('hidden'); lockSelection(false);
+  }
+  $('new-task').addEventListener('click', newTask);
+  $('discard-handoff').addEventListener('click', newTask);
+  $('continue-work').addEventListener('click', () => {
+    if (active || !latestState?.handoff) return;
+    const state = latestState;
+    newTask();
+    handoffDraft = state.handoff;
+    project.value = state.project;
+    // Read-only is the default for a new handoff; development is a fresh choice.
+    mode.value = 'reading'; mode.dispatchEvent(new Event('change'));
+    project.disabled = true;
+    $('handoff-summary').value = handoffDraft.summary;
+    $('handoff-confirm').required = true;
+    $('handoff-preview').classList.remove('hidden');
+    $('handoff-summary').focus(); start.textContent = 'Continuar com resumo';
   });
   async function recover() {
     start.disabled = true;
