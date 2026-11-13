@@ -98,6 +98,28 @@ reconfirmar as ações conforme as regras locais. Draft PR não é autorizado po
 esse fluxo. Contexto expirado ou de outro projeto é recusado. Não há persistência:
 reiniciar o backend perde a sessão e a possibilidade de recuperar seu resumo.
 
+### Relatório para compartilhamento
+
+Ao concluir, falhar ou cancelar uma execução, **Copiar relatório completo** abre uma prévia editável. Revise o texto antes de usar **Copiar texto revisado**: o resultado e os erros podem conter dados sensíveis. A cópia vai para a área de transferência local. O relatório usa o snapshot disponível, sem enviar dados a serviços externos; campos não comprovados aparecem como indisponíveis. Arquivos observados não são exportados porque o snapshot não comprova que sejam caminhos relativos dentro do projeto. A prévia é descartada ao iniciar outro turno.
+
+Exemplo com dados fictícios:
+
+```markdown
+# Relatório da execução
+
+Gerado em: 13/11/2026, 12:00:00
+Projeto: exemplo
+Estado: Concluída
+
+## Execução
+Fluxo solicitado: Automática · Econômica
+Fluxo efetivo: Direta
+Modelo/esforço observado: indisponível / indisponível
+
+## Resultado gerado pelo executor
+Análise concluída; verificações não informadas.
+```
+
 ### Roteamento de modelo e esforço
 
 A central seleciona modelo/esforço por tarefa com regras locais, sem chamada de
